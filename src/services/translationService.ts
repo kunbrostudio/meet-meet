@@ -2,6 +2,7 @@ import type {
   LanguageCode,
   TranslationSource,
 } from '../types/transcript'
+import { apiUrl } from './apiClient'
 
 export type TranslationRequest = {
   text: string
@@ -163,7 +164,7 @@ export async function translateText({
   }
 
   try {
-    const response = await fetch('/api/translate', {
+    const response = await fetch(apiUrl('/api/translate'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

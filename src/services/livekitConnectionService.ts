@@ -1,3 +1,5 @@
+import { apiUrl } from './apiClient'
+
 export type LiveKitMeetingRole = 'host' | 'participant'
 
 export type LiveKitTokenRequest = {
@@ -68,7 +70,7 @@ type LiveKitErrorResponse = {
 export async function requestLiveKitToken(
   request: LiveKitTokenRequest,
 ): Promise<LiveKitConnectionDetails> {
-  const response = await fetch('/api/livekit/token', {
+  const response = await fetch(apiUrl('/api/livekit/token'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -105,7 +107,7 @@ export async function requestLiveKitToken(
 export async function removeLiveKitParticipant(
   request: LiveKitRemoveParticipantRequest,
 ): Promise<LiveKitRemoveParticipantResponse> {
-  const response = await fetch('/api/livekit/remove-participant', {
+  const response = await fetch(apiUrl('/api/livekit/remove-participant'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

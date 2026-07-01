@@ -38,6 +38,7 @@ npm install
 OPENAI_API_KEY=
 OPENAI_TRANSLATION_MODEL=gpt-5-mini
 TRANSLATION_SERVER_PORT=8787
+VITE_API_BASE_URL=
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_livekit_api_key
 LIVEKIT_API_SECRET=your_livekit_api_secret
@@ -89,6 +90,14 @@ curl http://localhost:8787/api/health
 
 `LIVEKIT_API_SECRET`과 `OPENAI_API_KEY`는 서버에서만 사용해야 하며 프론트엔드 환경 변수로 노출하면 안 됩니다.
 
+프론트엔드가 별도 배포된 API 서버를 사용해야 하는 경우 `VITE_API_BASE_URL`을 설정합니다.
+
+```bash
+VITE_API_BASE_URL=https://say-merang-api.onrender.com
+```
+
+로컬 개발에서 값을 비워두면 기존처럼 `/api/...` 상대경로를 사용하고, Vite proxy를 통해 로컬 Express 서버로 전달됩니다.
+
 ## 번역 상태
 
 현재 프론트엔드의 `USE_REAL_TRANSLATION_API` 기본값은 `false`입니다. 따라서 기본 실행에서는 `/api/translate`를 호출하지 않고 로컬 fallback 번역을 사용합니다.
@@ -137,6 +146,14 @@ npm run lint
 - Netlify Functions
 
 이번 MVP에서는 배포 설정을 자동으로 변경하지 않습니다. 실제 배포 시에는 프론트엔드의 `/api` 요청이 배포된 API 서버 또는 functions endpoint로 연결되도록 설정해야 합니다.
+
+Netlify 프론트엔드와 Render API 서버를 함께 사용할 때는 Netlify 환경변수에 다음 값을 추가합니다.
+
+```bash
+VITE_API_BASE_URL=https://say-merang-api.onrender.com
+```
+
+이 값이 있어야 브라우저 요청이 `https://say-merang.netlify.app/api/...`가 아니라 `https://say-merang-api.onrender.com/api/...`로 전송됩니다.
 
 ## 프로젝트 구조
 

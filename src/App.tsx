@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { AppHeader } from './components/common/AppHeader'
+import { ENABLE_MOCK_DATA } from './constants/mockData'
 import { LandingPage } from './pages/LandingPage'
 import { MeetingHistoryPage } from './pages/MeetingHistoryPage'
 import { MeetingRoomPage } from './pages/MeetingRoomPage'
@@ -231,8 +232,12 @@ function App() {
       isCameraOn: localMedia.cameraEnabled,
       isMicOn: localMedia.microphoneEnabled,
     },
-    ...createMockRemoteParticipants(
-      Math.max(0, preferences.participantCount - 1),
+    ...(
+      ENABLE_MOCK_DATA
+        ? createMockRemoteParticipants(
+            Math.max(0, preferences.participantCount - 1),
+          )
+        : []
     ),
   ]
 

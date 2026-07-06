@@ -3107,6 +3107,27 @@
   white-space: pre-wrap;
 }
 
+.summary-empty-state {
+  padding: 20px;
+  border: 1px dashed #d8e1f1;
+  border-radius: 14px;
+  background: #f8faff;
+}
+
+.summary-empty-state strong {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.summary-empty-state p {
+  margin: 0;
+  color: #59667c;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 /* Meeting history */
 .history-page {
   min-height: calc(100vh - 68px);

@@ -39,6 +39,7 @@ OPENAI_API_KEY=
 OPENAI_TRANSLATION_MODEL=gpt-5-mini
 TRANSLATION_SERVER_PORT=8787
 VITE_API_BASE_URL=
+VITE_ENABLE_MOCK_DATA=false
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_livekit_api_key
 LIVEKIT_API_SECRET=your_livekit_api_secret
@@ -97,6 +98,14 @@ VITE_API_BASE_URL=https://say-merang-api.onrender.com
 ```
 
 로컬 개발에서 값을 비워두면 기존처럼 `/api/...` 상대경로를 사용하고, Vite proxy를 통해 로컬 Express 서버로 전달됩니다.
+
+샘플 참가자/샘플 transcript 데이터는 기본적으로 꺼져 있습니다. 개발 중 fixture 데이터를 확인해야 할 때만 `.env`에서 다음 값을 켭니다.
+
+```bash
+VITE_ENABLE_MOCK_DATA=true
+```
+
+이 플래그는 개발 모드에서만 적용됩니다.
 
 ## 번역 상태
 

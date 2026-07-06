@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { Icon } from '../components/common/Icon'
 import { Logo } from '../components/common/Logo'
+import { ENABLE_MOCK_DATA } from '../constants/mockData'
 import {
   ConversationPanel,
   type ConversationTab,
@@ -152,12 +153,16 @@ export function MeetingRoomPage({
     }
 
     const storedTranscripts = loadMeetingTranscripts(meetingId)
-    return storedTranscripts.length > 0
-      ? dedupeTranscripts(storedTranscripts)
-      : dedupeTranscripts(mockTranscripts.map((transcript) => ({
+    if (storedTranscripts.length > 0) {
+      return dedupeTranscripts(storedTranscripts)
+    }
+
+    return ENABLE_MOCK_DATA
+      ? dedupeTranscripts(mockTranscripts.map((transcript) => ({
           ...transcript,
           meetingId,
         })))
+      : []
   })
   const [chatMessages, setChatMessages] = useState(
     () => (
@@ -228,7 +233,9 @@ export function MeetingRoomPage({
           ...(
             isJoinFlow
               ? []
-              : createMockRemoteParticipants(Math.max(0, participantCount - 1))
+              : ENABLE_MOCK_DATA
+                ? createMockRemoteParticipants(Math.max(0, participantCount - 1))
+                : []
           ),
         ]
       : participants.slice(0, participantCount)
@@ -1875,9 +1882,11 @@ export function MeetingRoomPage({
         </div>
       </header>
 
-      {liveKitStatus === 'failed' && (
+      {(liveKitStatus === 'failed' || liveKitStatus === 'local') && (
         <div className="livekit-connection-notice" role="status">
-          회의 연결에 실패했습니다. 로컬 모드로 계속 진행합니다.
+          {liveKitStatus === 'failed'
+            ? '회의 연결에 실패했습니다. 로컬 데모 모드입니다. 실제 회의 연결이 아닙니다.'
+            : '로컬 데모 모드입니다. 실제 회의 연결이 아닙니다.'}
         </div>
       )}
 

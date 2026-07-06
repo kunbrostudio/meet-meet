@@ -70,7 +70,13 @@ export function ConversationPanel({
 
   const renderTranscriptItems = () => (
     <div className="transcript-list" ref={listRef}>
-      {transcripts.map((transcript) => {
+      {transcripts.length === 0 ? (
+        <div className="chat-empty">
+          <span><Icon name="captions" size={20} /></span>
+          <strong>아직 자막 기록이 없습니다.</strong>
+          <p>채팅을 보내거나 자막 기록을 시작하면 여기에 표시됩니다.</p>
+        </div>
+      ) : transcripts.map((transcript) => {
         const participant = participants.find(
           (item) => item.id === transcript.participantId,
         )
@@ -129,11 +135,11 @@ export function ConversationPanel({
   const renderChat = () => (
     <>
       <div className="chat-list" ref={listRef}>
-        {chatMessages.length === 0 ? (
+      {chatMessages.length === 0 ? (
           <div className="chat-empty">
             <span><Icon name="message" size={20} /></span>
-            <strong>아직 채팅 메시지가 없습니다.</strong>
-            <p>첫 메시지를 남겨 대화를 시작해 보세요.</p>
+            <strong>아직 채팅이 없습니다.</strong>
+            <p>채팅을 보내거나 자막 기록을 시작하면 여기에 표시됩니다.</p>
           </div>
         ) : chatMessages.map((chatMessage) => {
           const isMine =

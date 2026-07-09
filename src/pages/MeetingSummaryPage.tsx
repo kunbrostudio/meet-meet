@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Icon } from '../components/common/Icon'
 import { ENABLE_MOCK_DATA } from '../constants/mockData'
 import { mockSummary } from '../fixtures/mockSummary'
-import { getTranslatedText, mockTranscripts } from '../fixtures/mockTranscripts'
+import { mockTranscripts } from '../fixtures/mockTranscripts'
 import { exportMeetingAsMarkdown } from '../services/exportService'
 import { createTranscriptBasedSummary } from '../services/summaryService'
 import {
@@ -19,6 +19,20 @@ import {
   dedupeTranscripts,
   loadMeetingSession,
 } from '../services/meetingSessionStorageService'
+import {
+  createManualTranslation,
+  clearTranslations,
+  dedupeTranslations,
+  findTranslation,
+  getTranslationCacheKey,
+  loadTranslations,
+  saveTranslations,
+} from '../services/translationRecordService'
+import type {
+  TranslationRecord,
+  TranslationSourceType,
+} from '../types/translation'
+import type { LanguageCode } from '../types'
 
 type MeetingSummaryPageProps = {
   meetingId: string
@@ -56,6 +70,19 @@ export function MeetingSummaryPage({
   const [systemMessages, setSystemMessages] = useState(
     () => dedupeChatMessages(meetingSession?.systemMessages ?? []),
   )
+  const [translations, setTranslations] = useState<TranslationRecord[]>(
+    () => dedupeTranslations([
+      ...(meetingSession?.translations ?? []),
+      ...loadTranslations(meetingId),
+    ]),
+  )
+  const [translationTargetLanguage, setTranslationTargetLanguage] =
+    useState<LanguageCode>(
+      targetLanguage === 'ko' || targetLanguage === 'en'
+        ? targetLanguage
+        : 'en',
+    )
+  const [translatingKeys, setTranslatingKeys] = useState<string[]>([])
   const [deleteMessage, setDeleteMessage] = useState('')
   const [isDeletingRecord, setIsDeletingRecord] = useState(false)
   const [displayTranscripts, setDisplayTranscripts] = useState(() => {
@@ -128,8 +155,10 @@ export function MeetingSummaryPage({
       onDeleteRecord()
       setChatMessages([])
       setSystemMessages([])
+      clearTranslations(meetingId)
       clearMeetingSession(meetingId)
       setDisplayTranscripts([])
+      setTranslations([])
       setDeleteMessage('회의 기록이 삭제되었습니다.')
       window.setTimeout(() => {
         onHome()
@@ -158,7 +187,106 @@ export function MeetingSummaryPage({
       summary: displaySummary,
       transcripts: displayTranscripts,
       chatMessages,
+      translations,
     })
+  }
+
+  const translateSummaryItem = async (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    sourceText: string,
+    sourceLanguage: LanguageCode,
+  ) => {
+    const target =
+      sourceLanguage === 'ko'
+        ? 'en'
+        : sourceLanguage === 'en'
+          ? 'ko'
+          : translationTargetLanguage
+    const cacheKey = getTranslationCacheKey(sourceType, sourceId, target)
+
+    if (findTranslation(translations, sourceType, sourceId, target)) {
+      return
+    }
+
+    setTranslatingKeys((current) => (
+      current.includes(cacheKey) ? current : [...current, cacheKey]
+    ))
+
+    try {
+      const translation = await createManualTranslation({
+        roomCode: meetingSession?.roomCode ?? roomCode,
+        sourceType,
+        sourceId,
+        sourceText,
+        sourceLanguage,
+        targetLanguage: target,
+      })
+      const nextTranslations = dedupeTranslations([...translations, translation])
+      setTranslations(nextTranslations)
+      saveTranslations(meetingId, nextTranslations)
+    } catch (error) {
+      console.warn('[summary] Failed to translate item', error)
+      setDeleteMessage('번역에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+    } finally {
+      setTranslatingKeys((current) => (
+        current.filter((item) => item !== cacheKey)
+      ))
+    }
+  }
+
+  const renderTranslation = (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    sourceText: string,
+    sourceLanguage: LanguageCode,
+  ) => {
+    const effectiveTargetLanguage =
+      sourceLanguage === 'ko'
+        ? 'en'
+        : sourceLanguage === 'en'
+          ? 'ko'
+          : translationTargetLanguage
+    const translation = findTranslation(
+      translations,
+      sourceType,
+      sourceId,
+      effectiveTargetLanguage,
+    )
+    const key = getTranslationCacheKey(
+      sourceType,
+      sourceId,
+      effectiveTargetLanguage,
+    )
+    const isLoading = translatingKeys.includes(key)
+
+    return (
+      <div className="summary-translation">
+        <button
+          className="translation-button"
+          type="button"
+          disabled={isLoading || !sourceText.trim()}
+          onClick={() => void translateSummaryItem(
+            sourceType,
+            sourceId,
+            sourceText,
+            sourceLanguage,
+          )}
+        >
+          {isLoading
+            ? '번역 중...'
+            : translation
+              ? '다시 번역'
+              : '번역하기'}
+        </button>
+        {translation && (
+          <p className="translation-result">
+            <span>{translation.targetLanguage.toUpperCase()}</span>
+            {translation.translatedText}
+          </p>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -213,6 +341,23 @@ export function MeetingSummaryPage({
             {deleteMessage}
           </p>
         )}
+
+        <div className="local-recording-notice">
+          <strong>이 회의 기록은 현재 사용 중인 브라우저에만 임시 저장됩니다.</strong>
+          <span>보관이 필요한 경우 3일 이내에 Markdown 파일로 다운로드해 주세요. 브라우저 설정, 시크릿 모드, 캐시 삭제, 저장 공간 부족 등에 따라 기록이 더 빨리 사라질 수 있습니다.</span>
+          <label>
+            번역 언어
+            <select
+              value={translationTargetLanguage}
+              onChange={(event) => setTranslationTargetLanguage(
+                event.target.value as LanguageCode,
+              )}
+            >
+              <option value="ko">한국어</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
 
         <div className="summary-stats">
           {displaySummary.stats.map((stat) => (
@@ -276,7 +421,13 @@ export function MeetingSummaryPage({
                     <div className="summary-transcript-row" key={item.id}>
                       <time>{item.time}</time>
                       <strong>{participant?.name ?? item.speakerName}</strong>
-                      <p>{getTranslatedText(item, targetLanguage)}</p>
+                      <p>{item.sourceText}</p>
+                      {renderTranslation(
+                        'transcript',
+                        item.transcriptId ?? String(item.id),
+                        item.sourceText,
+                        item.sourceLanguage,
+                      )}
                     </div>
                   )
                 })}
@@ -301,6 +452,12 @@ export function MeetingSummaryPage({
                     </time>
                     <strong>{message.senderName}</strong>
                     <p>{message.message}</p>
+                    {message.type === 'user' && renderTranslation(
+                      'chat',
+                      message.id,
+                      message.message,
+                      message.language === 'en' ? 'en' : 'ko',
+                    )}
                   </div>
                 ))}
               </div>

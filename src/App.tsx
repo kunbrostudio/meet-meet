@@ -42,6 +42,8 @@ import {
   loadMeetingSession,
   saveEndedMeetingSessionToHistory,
 } from './services/meetingSessionStorageService'
+import { cleanupExpiredAndOversizedRecords } from './services/localFirstStoragePolicyService'
+import { clearTranslations } from './services/translationRecordService'
 
 export type Page = 'landing' | 'setup' | 'meeting' | 'summary' | 'history'
 
@@ -95,6 +97,10 @@ function getInitialMeetingState() {
 }
 
 function App() {
+  useEffect(() => {
+    cleanupExpiredAndOversizedRecords()
+  }, [])
+
   const [initialMeeting] = useState(getInitialMeetingState)
   const [page, setPage] = useState<Page>(getPageFromPath)
   const [currentRoom, setCurrentRoom] = useState(initialMeeting.room)
@@ -320,6 +326,7 @@ function App() {
   const deleteMeetingRecord = () => {
     clearMeetingTranscripts(meetingId)
     clearChatMessages(meetingId)
+    clearTranslations(meetingId)
     clearMeetingSession(meetingId)
     clearMeetingMeta(meetingId)
     deleteMeetingHistoryItem(meetingId)

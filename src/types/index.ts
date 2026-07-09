@@ -19,7 +19,13 @@ export type {
 export type { Participant } from './participant'
 export type {
   LanguageCode,
+  SpeechRecognitionLanguage,
   SupportedLanguage,
   Transcript,
   TranslationSource,
 } from './transcript'
+export type {
+  TranslationRecord,
+  TranslationRequestInput,
+  TranslationSourceType,
+} from './translation'

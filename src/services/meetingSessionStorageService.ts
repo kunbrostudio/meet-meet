@@ -6,6 +6,11 @@ import type {
 } from '../types/meeting'
 import type { ChatMessage } from '../types/chat'
 import type { Transcript } from '../types/transcript'
+import type { TranslationRecord } from '../types/translation'
+import {
+  canStoreMeetingSession,
+  createRecordExpiresAt,
+} from './localFirstStoragePolicyService'
 import {
   loadMeetingMeta,
   saveMeetingHistoryItem,
@@ -15,6 +20,11 @@ import {
 import {
   saveChatMessages,
 } from './chatService'
+import {
+  dedupeTranslations,
+  loadTranslations,
+  saveTranslations,
+} from './translationRecordService'
 
 type MeetingSessionInput = Partial<MeetingSessionRecord> & {
   meetingId: string
@@ -61,13 +71,20 @@ export function dedupeChatMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 export function dedupeTranscripts(transcripts: Transcript[]): Transcript[] {
-  const map = new Map<number, Transcript>()
+  const map = new Map<string, Transcript>()
 
   for (const transcript of transcripts) {
-    map.set(transcript.id, transcript)
+    map.set(transcript.transcriptId ?? String(transcript.id), transcript)
   }
 
   return sortByCreatedAt([...map.values()])
+}
+
+export function mergeTranslations(
+  previous: TranslationRecord[] = [],
+  next: TranslationRecord[] = [],
+): TranslationRecord[] {
+  return dedupeTranslations([...previous, ...next])
 }
 
 export function extractSystemMessages(
@@ -103,6 +120,10 @@ export function saveMeetingSession(
   const transcripts = dedupeTranscripts(
     input.transcripts ?? previous?.transcripts ?? [],
   )
+  const translations = mergeTranslations(
+    previous?.translations ?? loadTranslations(input.meetingId),
+    input.translations,
+  )
   const systemMessages = dedupeChatMessages([
     ...(input.systemMessages ?? previous?.systemMessages ?? []),
     ...extractSystemMessages(chatMessages),
@@ -125,13 +146,29 @@ export function saveMeetingSession(
     participants: input.participants ?? previous?.participants ?? [],
     chatMessages,
     transcripts,
+    translations,
     systemMessages,
+    recordingEnabled: input.recordingEnabled ?? previous?.recordingEnabled ?? true,
+    expiresAt:
+      input.expiresAt
+      ?? previous?.expiresAt
+      ?? (
+        input.endedAt
+          ? createRecordExpiresAt(input.endedAt)
+          : undefined
+      ),
     summaryStatus: input.summaryStatus ?? previous?.summaryStatus,
   })
+
+  if (!canStoreMeetingSession(session)) {
+    console.warn('[meeting-session] Meeting record is too large to save.')
+    return session
+  }
 
   writeJson(STORAGE_KEYS.meetingSession(input.meetingId), session)
   saveMeetingTranscripts(input.meetingId, session.transcripts)
   saveChatMessages(input.meetingId, session.chatMessages)
+  saveTranslations(input.meetingId, session.translations)
 
   return session
 }
@@ -167,6 +204,7 @@ export function saveEndedMeetingSessionToHistory(
     || loadedMeta?.participantCount
     || 1
   const endedAt = session.endedAt ?? new Date().toISOString()
+  const expiresAt = session.expiresAt ?? createRecordExpiresAt(endedAt)
   const usedLanguages = [...new Set(
     session.transcripts.flatMap((transcript) => [
       transcript.sourceLanguage,
@@ -197,12 +235,15 @@ export function saveEndedMeetingSessionToHistory(
     title: session.title,
     createdAt: session.createdAt,
     endedAt,
+    expiresAt,
     participantCount,
     transcriptCount: session.transcripts.length,
     usedLanguages,
   }
 
-  saveMeetingHistoryItem(historyItem)
+  if (session.recordingEnabled !== false) {
+    saveMeetingHistoryItem(historyItem)
+  }
 }
 
 function normalizeMeetingSession(
@@ -210,15 +251,21 @@ function normalizeMeetingSession(
 ): MeetingSessionRecord {
   const chatMessages = dedupeChatMessages(session.chatMessages ?? [])
   const transcripts = dedupeTranscripts(session.transcripts ?? [])
+  const translations = mergeTranslations(
+    session.translations ?? [],
+    loadTranslations(session.meetingId),
+  )
 
   return {
     ...session,
     participants: session.participants ?? [],
     chatMessages,
     transcripts,
+    translations,
     systemMessages: dedupeChatMessages([
       ...(session.systemMessages ?? []),
       ...extractSystemMessages(chatMessages),
     ]),
+    recordingEnabled: session.recordingEnabled ?? true,
   }
 }

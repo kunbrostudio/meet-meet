@@ -4,6 +4,7 @@ import type {
 } from '../types/meeting'
 import type { Transcript } from '../types/transcript'
 import { clearChatMessages } from './chatService'
+import { clearTranslations } from './translationRecordService'
 import { STORAGE_KEYS } from '../constants/storageKeys'
 
 function readJson<T>(key: string): T | null {
@@ -111,6 +112,7 @@ export function clearAllMeetingHistory(): void {
   history.forEach((item) => {
     clearMeetingTranscripts(item.meetingId)
     clearChatMessages(item.meetingId)
+    clearTranslations(item.meetingId)
     clearMeetingMeta(item.meetingId)
     localStorage.removeItem(STORAGE_KEYS.meetingSession(item.meetingId))
   })

@@ -8,6 +8,7 @@ type LanguageCode = 'ko' | 'en' | 'ja' | 'zh' | 'fr'
 
 type TranslateRequestBody = {
   text?: unknown
+  sourceText?: unknown
   sourceLanguage?: unknown
   targetLanguage?: unknown
 }
@@ -345,10 +346,12 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
 
 app.post('/api/translate', async (request, response) => {
   const {
-    text,
+    text: rawText,
+    sourceText,
     sourceLanguage,
     targetLanguage,
   } = request.body as TranslateRequestBody
+  const text = typeof rawText === 'string' ? rawText : sourceText
 
   console.info('[translation-server] Request received', {
     sourceText: typeof text === 'string' ? text : '[invalid]',

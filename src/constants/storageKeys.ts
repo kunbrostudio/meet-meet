@@ -11,6 +11,8 @@ export const STORAGE_KEYS = {
     `${STORAGE_PREFIX}:meeting:${meetingId}:transcripts`,
   meetingChat: (meetingId: string) =>
     `${STORAGE_PREFIX}:meeting:${meetingId}:chat`,
+  meetingTranslations: (meetingId: string) =>
+    `${STORAGE_PREFIX}:meeting:${meetingId}:translations`,
   meetingMeta: (meetingId: string) =>
     `${STORAGE_PREFIX}:meeting:${meetingId}:meta`,
 } as const

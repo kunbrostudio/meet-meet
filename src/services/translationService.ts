@@ -171,6 +171,7 @@ export async function translateText({
       },
       body: JSON.stringify({
         text,
+        sourceText: text,
         sourceLanguage,
         targetLanguage,
       }),

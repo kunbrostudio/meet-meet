@@ -5,6 +5,7 @@ import type {
 } from '../types/meeting'
 import type { Transcript } from '../types/transcript'
 import type { ChatMessage } from '../types/chat'
+import type { TranslationRecord } from '../types/translation'
 
 type MeetingExportData = {
   roomName: string
@@ -15,6 +16,7 @@ type MeetingExportData = {
   summary: MeetingSummary
   transcripts: Transcript[]
   chatMessages: ChatMessage[]
+  translations?: TranslationRecord[]
 }
 
 const languageNames: Record<string, string> = {
@@ -59,6 +61,7 @@ export function createMeetingMarkdown({
   summary,
   transcripts,
   chatMessages,
+  translations = [],
 }: MeetingExportData): string {
   const meetingDate =
     meetingSession?.startedAt
@@ -92,7 +95,17 @@ export function createMeetingMarkdown({
         `- 원문 (${languageNames[transcript.sourceLanguage] ?? transcript.sourceLanguage}): ${transcript.sourceText}`,
       ]
 
-      if (translatedText) {
+      const transcriptSourceId = transcript.transcriptId ?? String(transcript.id)
+      const manualTranslation = translations.find((translation) => (
+        translation.sourceType === 'transcript'
+        && translation.sourceId === transcriptSourceId
+      ))
+
+      if (manualTranslation) {
+        lines.push(
+          `- 번역 (${languageNames[manualTranslation.targetLanguage] ?? manualTranslation.targetLanguage}): ${manualTranslation.translatedText}`,
+        )
+      } else if (translatedText) {
         lines.push(
           `- 번역 (${languageNames[transcript.targetLanguage] ?? transcript.targetLanguage}): ${translatedText}`,
         )
@@ -108,7 +121,15 @@ export function createMeetingMarkdown({
           minute: '2-digit',
           hour12: false,
         }).format(new Date(message.createdAt))
-        return `- ${time} · **${message.senderName}**: ${message.message}`
+        const translation = translations.find((item) => (
+          item.sourceType === 'chat' && item.sourceId === message.id
+        ))
+        return [
+          `- ${time} · **${message.senderName}**: ${message.message}`,
+          translation
+            ? `  - ${translation.targetLanguage.toUpperCase()}: ${translation.translatedText}`
+            : '',
+        ].filter(Boolean).join('\n')
       }).join('\n')
     : '- 저장된 채팅 기록이 없습니다.'
   const systemEvents = meetingSession?.systemMessages.length

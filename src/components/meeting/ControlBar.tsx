@@ -10,10 +10,12 @@ type ControlBarProps = {
   isParticipantsOpen: boolean
   isSettingsOpen: boolean
   isHost: boolean
+  recordingEnabled: boolean
   chatUnreadCount: number
   viewMode: 'grid' | 'focus'
   showCaptionHint: boolean
   captionMessage: string
+  liveCaptionText: string
   screenShareMessage: string
   captionButtonRef: RefObject<HTMLButtonElement | null>
   chatButtonRef?: RefObject<HTMLButtonElement | null>
@@ -38,10 +40,12 @@ export function ControlBar({
   isParticipantsOpen,
   isSettingsOpen,
   isHost,
+  recordingEnabled,
   chatUnreadCount,
   viewMode,
   showCaptionHint,
   captionMessage,
+  liveCaptionText,
   screenShareMessage,
   captionButtonRef,
   chatButtonRef,
@@ -72,6 +76,14 @@ export function ControlBar({
           {captionMessage
             || (isCaptionActive ? '실시간 자막 기록 중' : '실시간 자막 꺼짐')}
         </div>
+        <div className={`recording-status ${recordingEnabled ? 'is-on' : 'is-off'}`}>
+          {recordingEnabled ? '기록 중' : '기록 저장 꺼짐'}
+        </div>
+        {liveCaptionText && (
+          <div className="live-caption-preview" aria-live="polite">
+            {liveCaptionText}
+          </div>
+        )}
       </div>
       <div className="meeting-controls">
         <ControlButton

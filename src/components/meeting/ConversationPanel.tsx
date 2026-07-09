@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { getTranslatedText } from '../../fixtures/mockTranscripts'
 import type { Participant } from '../../types/participant'
 import type { Transcript } from '../../types/transcript'
 import type { ChatMessage } from '../../types/chat'
+import type {
+  LanguageCode,
+  TranslationRecord,
+  TranslationSourceType,
+} from '../../types'
 import { Icon } from '../common/Icon'
 
 export type ConversationTab = 'chat' | 'transcript'
@@ -13,12 +17,24 @@ type ConversationPanelProps = {
   chatMessages: ChatMessage[]
   localParticipantId?: number
   targetLanguage: string
+  translationTargetLanguage: LanguageCode
+  translations: TranslationRecord[]
+  translatingKeys: string[]
   isOpen: boolean
   activeTab: ConversationTab
   chatUnreadCount: number
   onTabChange: (tab: ConversationTab) => void
   onClose: () => void
-  onSendChatMessage: (message: string) => void
+  onSendChatMessage: (message: string) => void | Promise<void>
+  canSendChatMessage?: boolean
+  chatSendMessage?: string
+  onTranslationTargetLanguageChange: (language: LanguageCode) => void
+  onTranslateItem: (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    sourceText: string,
+    sourceLanguage: LanguageCode,
+  ) => void | Promise<void>
 }
 
 const languageLabels: Record<string, string> = {
@@ -35,16 +51,100 @@ export function ConversationPanel({
   chatMessages,
   localParticipantId,
   targetLanguage,
+  translationTargetLanguage,
+  translations,
+  translatingKeys,
   isOpen,
   activeTab,
   chatUnreadCount,
   onTabChange,
   onClose,
   onSendChatMessage,
+  canSendChatMessage = true,
+  chatSendMessage = '',
+  onTranslationTargetLanguageChange,
+  onTranslateItem,
 }: ConversationPanelProps) {
   const [chatInput, setChatInput] = useState('')
+  const [isSendingChatMessage, setIsSendingChatMessage] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
+  const getTranslationKey = (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    targetLanguage = translationTargetLanguage,
+  ) => `${sourceType}:${sourceId}:${targetLanguage}`
+  const getEffectiveTranslationTarget = (
+    sourceLanguage: LanguageCode,
+  ): LanguageCode => {
+    if (sourceLanguage === 'ko') {
+      return 'en'
+    }
+    if (sourceLanguage === 'en') {
+      return 'ko'
+    }
+    return translationTargetLanguage
+  }
+  const detectChatLanguage = (message: ChatMessage): LanguageCode => {
+    if (
+      message.language === 'ko'
+      || message.language === 'en'
+      || message.language === 'ja'
+      || message.language === 'zh'
+      || message.language === 'fr'
+    ) {
+      return message.language
+    }
+
+    return /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(message.message) ? 'ko' : 'en'
+  }
+  const renderTranslationAction = (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    sourceText: string,
+    sourceLanguage: LanguageCode,
+  ) => {
+    const effectiveTargetLanguage = getEffectiveTranslationTarget(sourceLanguage)
+    const translation = translations.find((item) => (
+      item.sourceType === sourceType
+      && item.sourceId === sourceId
+      && item.targetLanguage === effectiveTargetLanguage
+    ))
+    const key = getTranslationKey(
+      sourceType,
+      sourceId,
+      effectiveTargetLanguage,
+    )
+    const isLoading = translatingKeys.includes(key)
+
+    return (
+      <div className="inline-translation">
+        <button
+          className="translation-button"
+          type="button"
+          disabled={isLoading || !sourceText.trim()}
+          onClick={() => void onTranslateItem(
+            sourceType,
+            sourceId,
+            sourceText,
+            sourceLanguage,
+          )}
+        >
+          {isLoading
+            ? '번역 중...'
+            : translation
+              ? '다시 번역'
+              : '번역하기'}
+        </button>
+        {translation && (
+          <p className="translation-result">
+            <span>{languageLabels[translation.targetLanguage] ?? translation.targetLanguage}</span>
+            {translation.translatedText}
+          </p>
+        )}
+      </div>
+    )
+  }
 
   useEffect(() => {
     const list = listRef.current
@@ -57,15 +157,20 @@ export function ConversationPanel({
     }
   }, [activeTab, transcripts.length, chatMessages.length])
 
-  const sendChatMessage = () => {
+  const sendChatMessage = async () => {
     const message = chatInput.trim()
 
-    if (!message) {
+    if (!message || !canSendChatMessage || isSendingChatMessage) {
       return
     }
 
-    onSendChatMessage(message)
-    setChatInput('')
+    setIsSendingChatMessage(true)
+    try {
+      await onSendChatMessage(message)
+      setChatInput('')
+    } finally {
+      setIsSendingChatMessage(false)
+    }
   }
 
   const renderTranscriptItems = () => (
@@ -74,7 +179,7 @@ export function ConversationPanel({
         <div className="chat-empty">
           <span><Icon name="captions" size={20} /></span>
           <strong>아직 자막 기록이 없습니다.</strong>
-          <p>채팅을 보내거나 자막 기록을 시작하면 여기에 표시됩니다.</p>
+          <p>음성 인식을 시작하면 발화 내용이 여기에 표시됩니다.</p>
         </div>
       ) : transcripts.map((transcript) => {
         const participant = participants.find(
@@ -119,12 +224,12 @@ export function ConversationPanel({
                 </span>
                 <p className="transcript-original">{transcript.sourceText}</p>
               </div>
-              <div className="transcript-copy translated-copy">
-                <span>Translated</span>
-                <p className="transcript-translated">
-                  {getTranslatedText(transcript, targetLanguage)}
-                </p>
-              </div>
+              {renderTranslationAction(
+                'transcript',
+                transcript.transcriptId ?? String(transcript.id),
+                transcript.sourceText,
+                transcript.sourceLanguage,
+              )}
             </div>
           </div>
         )
@@ -139,7 +244,7 @@ export function ConversationPanel({
           <div className="chat-empty">
             <span><Icon name="message" size={20} /></span>
             <strong>아직 채팅이 없습니다.</strong>
-            <p>채팅을 보내거나 자막 기록을 시작하면 여기에 표시됩니다.</p>
+            <p>메시지를 보내면 여기에 표시됩니다.</p>
           </div>
         ) : chatMessages.map((chatMessage) => {
           const isMine =
@@ -161,6 +266,12 @@ export function ConversationPanel({
                 <time>{time}</time>
               </div>
               <p>{chatMessage.message}</p>
+              {chatMessage.type === 'user' && renderTranslationAction(
+                'chat',
+                chatMessage.id,
+                chatMessage.message,
+                detectChatLanguage(chatMessage),
+              )}
             </div>
           )
         })}
@@ -168,6 +279,7 @@ export function ConversationPanel({
       <div className="chat-composer">
         <textarea
           value={chatInput}
+          disabled={!canSendChatMessage || isSendingChatMessage}
           onChange={(event) => setChatInput(event.target.value)}
           onCompositionStart={() => {
             isComposingRef.current = true
@@ -188,21 +300,30 @@ export function ConversationPanel({
 
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
-              sendChatMessage()
+              void sendChatMessage()
             }
           }}
-          placeholder="메시지를 입력하세요..."
+          placeholder={
+            canSendChatMessage
+              ? '메시지를 입력하세요...'
+              : '회의에 연결된 후 채팅을 보낼 수 있습니다.'
+          }
           rows={2}
         />
         <button
           type="button"
-          onClick={sendChatMessage}
-          disabled={!chatInput.trim()}
+          onClick={() => void sendChatMessage()}
+          disabled={!canSendChatMessage || isSendingChatMessage || !chatInput.trim()}
           aria-label="메시지 전송"
         >
           <Icon name="arrow-right" size={15} />
         </button>
       </div>
+      {(!canSendChatMessage || chatSendMessage) && (
+        <p className="chat-send-feedback">
+          {chatSendMessage || '회의에 연결된 후 채팅을 보낼 수 있습니다.'}
+        </p>
+      )}
     </>
   )
 
@@ -240,6 +361,19 @@ export function ConversationPanel({
             <Icon name="captions" size={13} /> Transcript
           </button>
         </div>
+        <div className="translation-target-control">
+          <span>번역</span>
+          <select
+            value={translationTargetLanguage}
+            onChange={(event) => onTranslationTargetLanguageChange(
+              event.target.value as LanguageCode,
+            )}
+            aria-label="번역 언어"
+          >
+            <option value="ko">한국어</option>
+            <option value="en">English</option>
+          </select>
+        </div>
       </div>
 
       {activeTab === 'chat' ? renderChat() : renderTranscriptItems()}
@@ -247,7 +381,7 @@ export function ConversationPanel({
       {activeTab === 'transcript' && (
         <div className="language-bar">
           <span><Icon name="globe" size={14} /> Translation language</span>
-          <strong>{languageLabels[targetLanguage] ?? targetLanguage} <Icon name="chevron-down" size={12} /></strong>
+          <strong>{languageLabels[translationTargetLanguage] ?? targetLanguage} <Icon name="chevron-down" size={12} /></strong>
         </div>
       )}
     </aside>

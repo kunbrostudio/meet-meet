@@ -1,4 +1,7 @@
-import type { LanguageCode } from '../types/transcript'
+import type {
+  LanguageCode,
+  SpeechRecognitionLanguage,
+} from '../types/transcript'
 
 type SpeechRecognitionResultEvent = Event & {
   resultIndex: number
@@ -37,19 +40,25 @@ type SpeechRecognitionWindow = Window & {
 }
 
 export type StartSpeechRecognitionOptions = {
-  language: LanguageCode
+  language: LanguageCode | SpeechRecognitionLanguage
   onResult: (text: string) => void
+  onInterimResult?: (text: string) => void
   onStart?: () => void
   onEnd?: () => void
   onError?: (errorCode: string) => void
 }
 
-const recognitionLanguageBySource: Record<LanguageCode, string> = {
+const recognitionLanguageBySource: Record<
+  LanguageCode | SpeechRecognitionLanguage,
+  string
+> = {
   ko: 'ko-KR',
   en: 'en-US',
   ja: 'ja-JP',
   zh: 'zh-CN',
   fr: 'fr-FR',
+  'ko-KR': 'ko-KR',
+  'en-US': 'en-US',
 }
 
 let activeRecognition: BrowserSpeechRecognition | null = null
@@ -67,7 +76,7 @@ export function isSpeechRecognitionSupported(): boolean {
 }
 
 export function createSpeechRecognition(
-  language: LanguageCode,
+  language: LanguageCode | SpeechRecognitionLanguage,
 ): BrowserSpeechRecognition | null {
   const SpeechRecognition = getSpeechRecognitionConstructor()
 
@@ -79,13 +88,14 @@ export function createSpeechRecognition(
   recognition.lang =
     recognitionLanguageBySource[language] ?? recognitionLanguageBySource.en
   recognition.continuous = true
-  recognition.interimResults = false
+  recognition.interimResults = true
   return recognition
 }
 
 export function startSpeechRecognition({
   language,
   onResult,
+  onInterimResult,
   onStart,
   onEnd,
   onError,
@@ -115,6 +125,8 @@ export function startSpeechRecognition({
 
       if (result.isFinal && transcript) {
         onResult(transcript)
+      } else if (transcript) {
+        onInterimResult?.(transcript)
       }
     }
   }

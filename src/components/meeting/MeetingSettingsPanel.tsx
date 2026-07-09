@@ -3,6 +3,7 @@ import type {
   LanguageCode,
   MediaDeviceSelection,
   Participant,
+  SpeechRecognitionLanguage,
 } from '../../types'
 import { Icon } from '../common/Icon'
 
@@ -10,36 +11,46 @@ type MeetingSettingsPanelProps = {
   participant: Participant | undefined
   targetLanguage: LanguageCode
   autoStartCaption: boolean
+  recordingEnabled: boolean
   deviceSelection: MediaDeviceSelection
   videoDevices: MediaDeviceInfo[]
   audioDevices: MediaDeviceInfo[]
   isChangingDevice: boolean
   message: string
   captionSize: CaptionSize
+  speechRecognitionLanguage: SpeechRecognitionLanguage
   onClose: () => void
   onDisplayNameChange: (name: string) => void
   onSourceLanguageChange: (language: LanguageCode) => void
   onTargetLanguageChange: (language: LanguageCode) => void
   onDeviceChange: (kind: 'video' | 'audio', deviceId: string) => void
   onCaptionSizeChange: (size: CaptionSize) => void
+  onSpeechRecognitionLanguageChange: (
+    language: SpeechRecognitionLanguage,
+  ) => void
+  onRecordingEnabledChange: (enabled: boolean) => void
 }
 
 export function MeetingSettingsPanel({
   participant,
   targetLanguage,
   autoStartCaption,
+  recordingEnabled,
   deviceSelection,
   videoDevices,
   audioDevices,
   isChangingDevice,
   message,
   captionSize,
+  speechRecognitionLanguage,
   onClose,
   onDisplayNameChange,
   onSourceLanguageChange,
   onTargetLanguageChange,
   onDeviceChange,
   onCaptionSizeChange,
+  onSpeechRecognitionLanguageChange,
+  onRecordingEnabledChange,
 }: MeetingSettingsPanelProps) {
   return (
     <div className="meeting-settings-backdrop" onMouseDown={onClose}>
@@ -84,6 +95,23 @@ export function MeetingSettingsPanel({
               </select>
               <Icon name="chevron-down" size={16} />
             </div>
+          </div>
+          <div className="field">
+            <label htmlFor="meeting-stt-language">음성 인식 언어</label>
+            <div className="select-wrap">
+              <select
+                id="meeting-stt-language"
+                value={speechRecognitionLanguage}
+                onChange={(event) => onSpeechRecognitionLanguageChange(
+                  event.target.value as SpeechRecognitionLanguage,
+                )}
+              >
+                <option value="ko-KR">한국어 (ko-KR)</option>
+                <option value="en-US">English (en-US)</option>
+              </select>
+              <Icon name="chevron-down" size={16} />
+            </div>
+            <p className="field-help">다음 실시간 자막 시작부터 적용됩니다.</p>
           </div>
           <div className="field">
             <label htmlFor="meeting-target-language">번역해서 볼 언어</label>
@@ -131,6 +159,17 @@ export function MeetingSettingsPanel({
             {autoStartCaption ? '사용 중' : '사용 안 함'}
           </strong>
         </div>
+        <label className="meeting-caption-setting recording-toggle">
+          <span>회의 기록 저장</span>
+          <input
+            type="checkbox"
+            checked={recordingEnabled}
+            onChange={(event) => onRecordingEnabledChange(event.target.checked)}
+          />
+          <strong className={recordingEnabled ? 'is-enabled' : ''}>
+            {recordingEnabled ? '기록 중' : '기록 저장 꺼짐'}
+          </strong>
+        </label>
         <section className="caption-display-settings">
           <div>
             <span>자막 표시 설정</span>

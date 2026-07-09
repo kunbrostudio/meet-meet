@@ -26,6 +26,7 @@ import {
   LIVEKIT_CHAT_TOPIC,
   LIVEKIT_MEETING_CONTROL_TOPIC,
   LIVEKIT_TRANSCRIPT_TOPIC,
+  LIVEKIT_TRANSLATION_TOPIC,
   type LiveKitDataMessage,
 } from '../../services/livekitChatService'
 import { mapLiveKitParticipantsToParticipants } from '../../services/livekitParticipantAdapter'
@@ -284,6 +285,15 @@ function LiveKitDataBridge({
           },
         )
       },
+      publishTranslationMessage: async (message) => {
+        await room.localParticipant.publishData(
+          encodeLiveKitDataMessage(message),
+          {
+            reliable: true,
+            topic: LIVEKIT_TRANSLATION_TOPIC,
+          },
+        )
+      },
       publishMeetingControlMessage: async (message) => {
         await room.localParticipant.publishData(
           encodeLiveKitDataMessage(message),
@@ -304,6 +314,7 @@ function LiveKitDataBridge({
       if (
         topic !== LIVEKIT_CHAT_TOPIC
         && topic !== LIVEKIT_TRANSCRIPT_TOPIC
+        && topic !== LIVEKIT_TRANSLATION_TOPIC
         && topic !== LIVEKIT_MEETING_CONTROL_TOPIC
       ) {
         return
@@ -316,6 +327,8 @@ function LiveKitDataBridge({
             || message?.type === 'participant-kicked'
           : topic === LIVEKIT_TRANSCRIPT_TOPIC
           ? message?.type === 'transcript-created'
+          : topic === LIVEKIT_TRANSLATION_TOPIC
+          ? message?.type === 'translation'
           : message?.type === 'chat-message'
             || message?.type === 'system-message'
       )

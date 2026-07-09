@@ -47,6 +47,10 @@ export function createChatMessage({
   meetingId,
   senderId,
   senderName,
+  senderIdentity,
+  senderRole,
+  roomCode,
+  language,
   message,
 }: CreateChatMessageInput): ChatMessage {
   return {
@@ -54,6 +58,10 @@ export function createChatMessage({
     meetingId,
     senderId,
     senderName,
+    senderIdentity,
+    senderRole,
+    roomCode,
+    language,
     message: message.trim(),
     createdAt: new Date().toISOString(),
     type: 'user',

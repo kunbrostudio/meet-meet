@@ -2,6 +2,7 @@ import type { LanguageCode } from './transcript'
 import type { ChatMessage } from './chat'
 import type { Participant } from './participant'
 import type { Transcript } from './transcript'
+import type { TranslationRecord } from './translation'
 
 export type SummaryStat = {
   id: string
@@ -67,6 +68,7 @@ export type MeetingHistoryItem = {
   title: string
   createdAt: string
   endedAt: string
+  expiresAt?: string
   participantCount: number
   transcriptCount: number
   usedLanguages: LanguageCode[]
@@ -84,7 +86,10 @@ export type MeetingSessionRecord = {
   participants: Participant[]
   chatMessages: ChatMessage[]
   transcripts: Transcript[]
+  translations: TranslationRecord[]
   systemMessages: ChatMessage[]
+  recordingEnabled?: boolean
+  expiresAt?: string
   summaryStatus?: 'draft' | 'ready' | 'exported'
 }
 

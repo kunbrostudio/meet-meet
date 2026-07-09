@@ -53,6 +53,9 @@ export type LiveKitDataController = {
   publishTranscriptMessage: (
     message: import('./livekitChatService').LiveKitDataMessage,
   ) => Promise<void>
+  publishTranslationMessage: (
+    message: import('./livekitChatService').LiveKitDataMessage,
+  ) => Promise<void>
   publishMeetingControlMessage: (
     message: import('./livekitChatService').LiveKitDataMessage,
   ) => Promise<void>

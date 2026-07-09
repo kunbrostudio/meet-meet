@@ -9,6 +9,8 @@ import {
 import type { MeetingHistoryItem } from '../types/meeting'
 import { clearChatMessages } from '../services/chatService'
 import { clearMeetingSession } from '../services/meetingSessionStorageService'
+import { clearTranslations } from '../services/translationRecordService'
+import { getExpiryLabel } from '../services/localFirstStoragePolicyService'
 
 type MeetingHistoryPageProps = {
   onBack: () => void
@@ -64,6 +66,7 @@ export function MeetingHistoryPage({
     try {
       clearMeetingTranscripts(meetingId)
       clearChatMessages(meetingId)
+      clearTranslations(meetingId)
       clearMeetingSession(meetingId)
       clearMeetingMeta(meetingId)
       deleteMeetingHistoryItem(meetingId)
@@ -86,7 +89,7 @@ export function MeetingHistoryPage({
           <div>
             <span className="history-eyebrow">MEETING ARCHIVE</span>
             <h1>회의 기록</h1>
-            <p>이전에 저장한 회의와 대화 기록을 다시 확인하세요.</p>
+            <p>이 기기에 임시 저장된 회의 기록입니다. 기록은 최대 3일 동안 보관되며 브라우저 상태에 따라 더 빨리 삭제될 수 있습니다.</p>
           </div>
           <div className="history-heading-actions">
             <button
@@ -135,6 +138,7 @@ export function MeetingHistoryPage({
                 <span className="history-room-code">
                   {item.roomCode || 'MER-LOCAL'}
                 </span>
+                <p className="history-expiry">{getExpiryLabel(item.expiresAt)}</p>
                 <div className="history-meta-grid">
                   <span><Icon name="users" size={14} /> {item.participantCount}명</span>
                   <span><Icon name="captions" size={14} /> {item.transcriptCount}개 기록</span>

@@ -24,6 +24,7 @@ import { RemoveParticipantModal } from '../components/meeting/RemoveParticipantM
 import type { Participant } from '../types/participant'
 import type {
   LanguageCode,
+  SpeechRecognitionLanguage,
   SupportedLanguage,
   Transcript,
   TranslationSource,
@@ -32,6 +33,10 @@ import type {
   LocalMediaState,
   MediaDeviceSelection,
 } from '../types/meeting'
+import type {
+  TranslationRecord,
+  TranslationSourceType,
+} from '../types/translation'
 import {
   getSpeechRecognitionStatus,
   isSpeechRecognitionSupported,
@@ -72,6 +77,14 @@ import {
   saveChatMessages,
 } from '../services/chatService'
 import {
+  createManualTranslation,
+  dedupeTranslations,
+  findTranslation,
+  getTranslationCacheKey,
+  loadTranslations,
+  saveTranslations,
+} from '../services/translationRecordService'
+import {
   isScreenShareSupported,
   startScreenShare,
   stopScreenShare,
@@ -89,7 +102,13 @@ import {
   type LiveKitMediaController,
   type LiveKitScreenShare,
 } from '../services/livekitConnectionService'
-import type { LiveKitDataMessage } from '../services/livekitChatService'
+import {
+  chatMessageToLiveKitPayload,
+  liveKitPayloadToChatMessage,
+  liveKitPayloadToTranscript,
+  transcriptToLiveKitPayload,
+  type LiveKitDataMessage,
+} from '../services/livekitChatService'
 
 const LiveKitTestRoom = lazy(
   () => import('../components/livekit/LiveKitTestRoom').then(
@@ -171,11 +190,27 @@ export function MeetingRoomPage({
         : dedupeChatMessages(loadChatMessages(meetingId))
     ),
   )
+  const [translations, setTranslations] = useState<TranslationRecord[]>(
+    () => dedupeTranslations([
+      ...(restoredMeetingSession?.translations ?? []),
+      ...loadTranslations(meetingId),
+    ]),
+  )
+  const [translationTargetLanguage, setTranslationTargetLanguage] =
+    useState<LanguageCode>(
+      targetLanguage === 'ko' || targetLanguage === 'en'
+        ? targetLanguage
+        : 'en',
+    )
+  const [translatingKeys, setTranslatingKeys] = useState<string[]>([])
   const [
     isSpeechRecognitionActive,
     setIsSpeechRecognitionActive,
   ] = useState(false)
   const [speechMessage, setSpeechMessage] = useState('')
+  const [liveCaptionText, setLiveCaptionText] = useState('')
+  const [speechRecognitionLanguage, setSpeechRecognitionLanguage] =
+    useState<SpeechRecognitionLanguage>('ko-KR')
   const [captionSize, setCaptionSize] = useState<CaptionSize>(
     () => loadCaptionPreferences().size,
   )
@@ -226,6 +261,10 @@ export function MeetingRoomPage({
   const [wasRemovedFromMeeting, setWasRemovedFromMeeting] = useState(false)
   const [isMeetingEndedRemotely, setIsMeetingEndedRemotely] = useState(false)
   const [chatUnreadCount, setChatUnreadCount] = useState(0)
+  const [chatSendMessage, setChatSendMessage] = useState('')
+  const [recordingEnabled, setRecordingEnabled] = useState(
+    () => restoredMeetingSession?.recordingEnabled ?? true,
+  )
   const [roomParticipants, setRoomParticipants] = useState<Participant[]>(() => {
     return initialLocalParticipant
       ? [
@@ -252,12 +291,13 @@ export function MeetingRoomPage({
   const liveKitConnectedRoomRef = useRef<string | null>(null)
   const autoStartInProgressRef = useRef(false)
   const captionRestartTimerRef = useRef<number | null>(null)
+  const liveCaptionClearTimerRef = useRef<number | null>(null)
   const screenShareStreamRef = useRef<MediaStream | null>(null)
   const liveKitMediaControllerRef =
     useRef<LiveKitMediaController | null>(null)
   const liveKitDataControllerRef =
     useRef<LiveKitDataController | null>(null)
-  const publishedTranscriptIdsRef = useRef(new Set<number>())
+  const publishedTranscriptIdsRef = useRef(new Set<string>())
   const meetingExitInProgressRef = useRef(false)
   const meetingSessionSaveTimerRef = useRef<number | null>(null)
   const meetingSessionSnapshotRef = useRef('')
@@ -276,6 +316,9 @@ export function MeetingRoomPage({
       if (captionRestartTimerRef.current !== null) {
         window.clearTimeout(captionRestartTimerRef.current)
       }
+      if (liveCaptionClearTimerRef.current !== null) {
+        window.clearTimeout(liveCaptionClearTimerRef.current)
+      }
       if (meetingSessionSaveTimerRef.current !== null) {
         window.clearTimeout(meetingSessionSaveTimerRef.current)
       }
@@ -291,6 +334,10 @@ export function MeetingRoomPage({
     const sortedMessages = dedupeChatMessages(chatMessages)
     saveChatMessages(meetingId, sortedMessages)
   }, [chatMessages, meetingId])
+
+  useEffect(() => {
+    saveTranslations(meetingId, translations)
+  }, [meetingId, translations])
 
   useEffect(() => {
     saveCaptionPreferences({ size: captionSize })
@@ -341,6 +388,26 @@ export function MeetingRoomPage({
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [isRemovingParticipant, participantToRemove])
 
+  const showLiveCaptionText = (text: string, persistMs = 0) => {
+    if (liveCaptionClearTimerRef.current !== null) {
+      window.clearTimeout(liveCaptionClearTimerRef.current)
+      liveCaptionClearTimerRef.current = null
+    }
+
+    setLiveCaptionText(text)
+
+    if (persistMs > 0) {
+      liveCaptionClearTimerRef.current = window.setTimeout(() => {
+        setLiveCaptionText('')
+        liveCaptionClearTimerRef.current = null
+      }, persistMs)
+    }
+  }
+
+  const getTranscriptSourceLanguage = (): LanguageCode => (
+    speechRecognitionLanguage === 'en-US' ? 'en' : 'ko'
+  )
+
   const addTranscript = (sourceText: string): Transcript | null => {
     const currentUser = isLiveKitConnected
       ? liveKitParticipants.find(
@@ -356,15 +423,21 @@ export function MeetingRoomPage({
 
     const now = new Date()
     const pendingTranslations = getPendingTranslationText()
-    const transcriptId = now.getTime()
+    const numericTranscriptId = now.getTime()
+    const transcriptId = crypto.randomUUID?.()
+      ?? `transcript-${numericTranscriptId}`
     const pendingText =
       pendingTranslations[targetLanguage as SupportedLanguage]
       ?? pendingTranslations.en
     const newTranscript: Transcript = {
-      id: transcriptId,
+      id: numericTranscriptId,
+      transcriptId,
       meetingId,
+      roomCode,
       participantId: currentUser.id,
       speakerId: currentUser.id,
+      speakerIdentity: currentUser.liveKitIdentity ?? String(currentUser.id),
+      speakerRole: currentUser.meetingRole === 'host' ? 'host' : 'guest',
       time: now.toLocaleTimeString('ko-KR', {
         hour: '2-digit',
         minute: '2-digit',
@@ -372,7 +445,8 @@ export function MeetingRoomPage({
       }),
       createdAt: now.toISOString(),
       speakerName: currentUser.name,
-      sourceLanguage: currentUser.language,
+      sourceLanguage: getTranscriptSourceLanguage(),
+      recognitionLanguage: speechRecognitionLanguage,
       sourceText,
       targetLanguage,
       translatedText: pendingText,
@@ -381,6 +455,7 @@ export function MeetingRoomPage({
         ...pendingTranslations,
         [targetLanguage]: pendingText,
       },
+      isFinal: true,
     }
 
     setTranscripts((previous) => {
@@ -411,9 +486,10 @@ export function MeetingRoomPage({
   }
 
   const publishLiveKitTranscript = (transcript: Transcript) => {
+    const transcriptKey = transcript.transcriptId ?? String(transcript.id)
     if (
       !isLiveKitConnected
-      || publishedTranscriptIdsRef.current.has(transcript.id)
+      || publishedTranscriptIdsRef.current.has(transcriptKey)
     ) {
       return
     }
@@ -422,17 +498,22 @@ export function MeetingRoomPage({
     if (!controller) {
       console.warn(
         '[livekit-transcript] Data controller is not ready; transcript remains local.',
-        { transcriptId: transcript.id },
+        { transcriptId: transcriptKey },
       )
       return
     }
 
-    publishedTranscriptIdsRef.current.add(transcript.id)
+    publishedTranscriptIdsRef.current.add(transcriptKey)
     void controller.publishTranscriptMessage({
       type: 'transcript-created',
-      payload: transcript,
+      payload: transcriptToLiveKitPayload(transcript, {
+        roomCode,
+        speakerIdentity: transcript.speakerIdentity,
+        speakerRole: transcript.speakerRole,
+        language: transcript.recognitionLanguage,
+      }),
     }).catch((error) => {
-      publishedTranscriptIdsRef.current.delete(transcript.id)
+      publishedTranscriptIdsRef.current.delete(transcriptKey)
       console.error(
         '[livekit-transcript] Failed to publish transcript',
         error,
@@ -444,8 +525,12 @@ export function MeetingRoomPage({
     localParticipant: Participant,
   ): boolean => {
     return startSpeechRecognition({
-      language: localParticipant.language,
+      language: speechRecognitionLanguage,
+      onInterimResult: (interimText) => {
+        showLiveCaptionText(interimText)
+      },
       onResult: async (sourceText) => {
+        showLiveCaptionText(sourceText, 3600)
         const newTranscript = addTranscript(sourceText)
 
         if (newTranscript === null) {
@@ -455,7 +540,7 @@ export function MeetingRoomPage({
         try {
           const translation = await translateText({
             text: sourceText,
-            sourceLanguage: localParticipant.language,
+            sourceLanguage: getTranscriptSourceLanguage(),
             targetLanguage,
           })
           updateTranscriptTranslation(
@@ -517,7 +602,7 @@ export function MeetingRoomPage({
           wasAutoStart
             ? '실시간 자막을 시작하려면 자막 버튼을 눌러주세요.'
             : errorCode === 'unsupported'
-              ? '현재 브라우저에서는 실시간 자막을 지원하지 않습니다. Chrome에서 테스트해주세요.'
+              ? '이 브라우저에서는 음성 인식을 지원하지 않습니다.'
               : `실시간 자막 오류: ${errorCode}`,
         )
       },
@@ -532,9 +617,10 @@ export function MeetingRoomPage({
       setShowCaptionHint(false)
     }
 
-    const localParticipant = roomParticipants.find(
-      (participant) => participant.role === 'local',
-    )
+    const localParticipant = displayedLocalParticipant
+      ?? roomParticipants.find(
+        (participant) => participant.role === 'local',
+      )
     const supported = isSpeechRecognitionSupported()
     setSpeechMessage('')
 
@@ -564,7 +650,7 @@ export function MeetingRoomPage({
 
     if (!supported) {
       autoStartInProgressRef.current = false
-      setSpeechMessage('현재 브라우저에서는 실시간 자막을 지원하지 않습니다. Chrome에서 테스트해주세요.')
+      setSpeechMessage('이 브라우저에서는 음성 인식을 지원하지 않습니다.')
       return
     }
 
@@ -883,7 +969,20 @@ export function MeetingRoomPage({
     (participant) => participant.role === 'local',
   )
 
-  const sendChatMessage = (message: string) => {
+  const sendChatMessage = async (message: string) => {
+    setChatSendMessage('')
+
+    const isWaitingForLiveConnection =
+      liveKitStatus === 'connecting'
+      || liveKitStatus === 'leaving'
+      || liveKitStatus === 'ended'
+      || liveKitStatus === 'kicked'
+
+    if (isWaitingForLiveConnection) {
+      setChatSendMessage('회의에 연결된 후 채팅을 보낼 수 있습니다.')
+      return
+    }
+
     const sender = isLiveKitConnected
       ? liveKitParticipants.find(
           (participant) => participant.role === 'local',
@@ -894,10 +993,15 @@ export function MeetingRoomPage({
       return
     }
 
+    const senderRole = sender.meetingRole === 'host' ? 'host' : 'guest'
     const newMessage = createChatMessage({
       meetingId,
       senderId: sender.id,
       senderName: sender.name,
+      senderIdentity: sender.liveKitIdentity ?? String(sender.id),
+      senderRole,
+      roomCode,
+      language: sender.language,
       message,
     })
     setChatMessages((current) => (
@@ -907,14 +1011,82 @@ export function MeetingRoomPage({
     ))
 
     if (isLiveKitConnected) {
-      void liveKitDataControllerRef.current
-        ?.publishChatMessage({
+      try {
+        await liveKitDataControllerRef.current
+          ?.publishChatMessage({
           type: 'chat-message',
-          payload: newMessage,
+          payload: chatMessageToLiveKitPayload(newMessage, {
+            roomCode,
+            senderIdentity: sender.liveKitIdentity ?? String(sender.id),
+            senderRole,
+            language: sender.language,
+          }),
         })
-        .catch((error) => {
-          console.error('[livekit-chat] Failed to publish chat message', error)
-        })
+        console.debug('[chat] message sent', newMessage.id)
+      } catch (error) {
+        console.warn('[livekit-chat] Failed to publish chat message', error)
+        setChatSendMessage('메시지를 보내지 못했습니다.')
+      }
+    }
+  }
+
+  const translateConversationItem = async (
+    sourceType: TranslationSourceType,
+    sourceId: string,
+    sourceText: string,
+    sourceLanguage: LanguageCode,
+  ) => {
+    const target =
+      sourceLanguage === 'ko'
+        ? 'en'
+        : sourceLanguage === 'en'
+          ? 'ko'
+          : translationTargetLanguage
+    const cacheKey = getTranslationCacheKey(sourceType, sourceId, target)
+
+    if (findTranslation(translations, sourceType, sourceId, target)) {
+      return
+    }
+
+    setTranslatingKeys((current) => (
+      current.includes(cacheKey) ? current : [...current, cacheKey]
+    ))
+
+    try {
+      const translation = await createManualTranslation({
+        roomCode,
+        sourceType,
+        sourceId,
+        sourceText,
+        sourceLanguage,
+        targetLanguage: target,
+      })
+
+      setTranslations((current) => {
+        if (findTranslation(current, sourceType, sourceId, target)) {
+          return current
+        }
+
+        return dedupeTranslations([...current, translation])
+      })
+
+      if (isLiveKitConnected) {
+        await liveKitDataControllerRef.current
+          ?.publishTranslationMessage({
+            type: 'translation',
+            payload: translation,
+          })
+          .catch((error) => {
+            console.warn('[livekit-translation] Failed to publish translation', error)
+          })
+      }
+    } catch (error) {
+      console.warn('[translation] Failed to translate item', error)
+      setSettingsMessage('번역에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+    } finally {
+      setTranslatingKeys((current) => (
+        current.filter((item) => item !== cacheKey)
+      ))
     }
   }
 
@@ -1124,7 +1296,15 @@ export function MeetingRoomPage({
         await liveKitDataControllerRef.current
           ?.publishChatMessage({
             type: 'system-message',
-            payload: systemMessage,
+            payload: chatMessageToLiveKitPayload(systemMessage, {
+              roomCode,
+              senderIdentity:
+                currentHost?.liveKitIdentity
+                ?? liveKitConnection?.participantIdentity
+                ?? 'system',
+              senderRole: 'system',
+              language: currentHost?.language ?? 'ko',
+            }),
           })
           .catch((error) => {
             console.error(
@@ -1307,6 +1487,7 @@ export function MeetingRoomPage({
       ]),
       chatIds: chatMessages.map((message) => message.id),
       transcriptIds: transcripts.map((transcript) => transcript.id),
+      translationIds: translations.map((translation) => translation.translationId),
     })
 
     if (snapshot === meetingSessionSnapshotRef.current) {
@@ -1327,6 +1508,8 @@ export function MeetingRoomPage({
         participants: displayedParticipants,
         chatMessages,
         transcripts,
+        translations,
+        recordingEnabled,
         createdAt: restoredMeetingSession?.createdAt,
         startedAt: restoredMeetingSession?.startedAt,
       })
@@ -1340,6 +1523,8 @@ export function MeetingRoomPage({
     roomCode,
     roomName,
     transcripts,
+    translations,
+    recordingEnabled,
   ])
 
   const isCurrentUserHost =
@@ -1507,6 +1692,11 @@ export function MeetingRoomPage({
   const isLocalScreenSharing = isLiveKitConnected
     ? Boolean(liveKitScreenShare?.isLocal)
     : isScreenSharing
+  const canSendChatMessage = !wasRemovedFromMeeting
+    && liveKitStatus !== 'connecting'
+    && liveKitStatus !== 'leaving'
+    && liveKitStatus !== 'ended'
+    && liveKitStatus !== 'kicked'
 
   const activeMainParticipantId = displayedParticipants.some(
     (participant) => participant.id === selectedMainParticipantId,
@@ -1557,6 +1747,8 @@ export function MeetingRoomPage({
       participants: displayedParticipants,
       chatMessages: nextChatMessages,
       transcripts,
+      translations,
+      recordingEnabled,
       summaryStatus: 'ready',
     })
     saveEndedMeetingSessionToHistory(finalSession)
@@ -1577,7 +1769,9 @@ export function MeetingRoomPage({
     localParticipant,
     meetingId,
     onLeave,
+    recordingEnabled,
     transcripts,
+    translations,
     displayedParticipants,
     restoredMeetingSession?.createdAt,
     restoredMeetingSession?.startedAt,
@@ -1621,7 +1815,15 @@ export function MeetingRoomPage({
         if (dataController) {
           await dataController.publishChatMessage({
             type: 'system-message',
-            payload: systemMessage,
+            payload: chatMessageToLiveKitPayload(systemMessage, {
+              roomCode,
+              senderIdentity:
+                actor.liveKitIdentity
+                ?? liveKitConnection?.participantIdentity
+                ?? 'system',
+              senderRole: 'system',
+              language: actor.language,
+            }),
           }).catch((error) => {
             console.error(
               '[livekit-chat] Failed to publish meeting end system message',
@@ -1691,38 +1893,115 @@ export function MeetingRoomPage({
       if (message.type === 'transcript-created') {
         // TODO: Translate the received sourceText again for each receiver's
         // targetLanguage when per-user translation is introduced.
-        setTranscripts((current) => (
-          current.some((item) => item.id === message.payload.id)
-            ? current
-            : dedupeTranscripts([...current, message.payload])
-        ))
+        const speakerParticipant = displayedParticipants.find(
+          (participant) => (
+            participant.liveKitIdentity === message.payload.speakerId
+            || String(participant.id) === message.payload.speakerId
+          ),
+        )
+        const incomingTranscript = liveKitPayloadToTranscript(
+          message.payload,
+          {
+            participantId: speakerParticipant?.id,
+            speakerNumericId: speakerParticipant?.id,
+            targetLanguage,
+          },
+        )
+
+        setTranscripts((current) => {
+          const incomingKey =
+            incomingTranscript.transcriptId ?? String(incomingTranscript.id)
+          if (
+            current.some((item) => (
+              (item.transcriptId ?? String(item.id)) === incomingKey
+            ))
+          ) {
+            return current
+          }
+
+          return dedupeTranscripts([...current, incomingTranscript])
+        })
         return
       }
 
+      if (message.type === 'translation') {
+        setTranslations((current) => {
+          if (
+            findTranslation(
+              current,
+              message.payload.sourceType,
+              message.payload.sourceId,
+              message.payload.targetLanguage,
+            )
+          ) {
+            return current
+          }
+
+          return dedupeTranslations([...current, message.payload])
+        })
+        return
+      }
+
+      const isChatLikeMessage =
+        message.type === 'chat-message' || message.type === 'system-message'
+
+      if (!isChatLikeMessage) {
+        return
+      }
+
+      const senderParticipant = displayedParticipants.find(
+        (participant) => (
+          participant.liveKitIdentity === message.payload.senderId
+          || String(participant.id) === message.payload.senderId
+        ),
+      )
+      const incomingChatMessage = liveKitPayloadToChatMessage(
+        message.payload,
+        senderParticipant?.id ?? null,
+      )
+      const localIdentity =
+        displayedLocalParticipant?.liveKitIdentity
+        ?? liveKitConnection?.participantIdentity
+        ?? (
+          displayedLocalParticipant
+            ? String(displayedLocalParticipant.id)
+            : undefined
+        )
+      const isMine =
+        message.payload.senderId === localIdentity
+        || (
+          incomingChatMessage.senderId !== null
+          && incomingChatMessage.senderId === displayedLocalParticipant?.id
+        )
+
       if (
         message.type === 'chat-message'
-        && message.payload.senderId !== displayedLocalParticipant?.id
+        && !isMine
         && (!isConversationOpen || conversationTab !== 'chat')
       ) {
         setChatUnreadCount((current) => current + 1)
       }
 
-      setChatMessages((current) => (
-        current.some((item) => item.id === message.payload.id)
-          ? current
-          : dedupeChatMessages([...current, message.payload])
-      ))
+      setChatMessages((current) => {
+        if (current.some((item) => item.id === incomingChatMessage.id)) {
+          return current
+        }
+
+        console.debug('[chat] message received', incomingChatMessage.id)
+        return dedupeChatMessages([...current, incomingChatMessage])
+      })
     },
     [
       chatMessages,
       conversationTab,
-      displayedLocalParticipant?.id,
-      displayedLocalParticipant?.liveKitIdentity,
+      displayedLocalParticipant,
+      displayedParticipants,
       finalizeMeetingAndNavigate,
       isConversationOpen,
       liveKitConnection?.participantIdentity,
       markParticipantKicked,
       meetingId,
+      targetLanguage,
     ],
   )
 
@@ -1980,12 +2259,19 @@ export function MeetingRoomPage({
             displayedLocalParticipant?.id ?? localParticipant?.id
           }
           targetLanguage={targetLanguage}
+          translationTargetLanguage={translationTargetLanguage}
+          translations={translations}
+          translatingKeys={translatingKeys}
           isOpen={isConversationOpen}
           activeTab={conversationTab}
           chatUnreadCount={chatUnreadCount}
           onTabChange={(tab) => openConversationPanel(tab)}
           onClose={closeConversationPanel}
           onSendChatMessage={sendChatMessage}
+          canSendChatMessage={canSendChatMessage}
+          chatSendMessage={chatSendMessage}
+          onTranslationTargetLanguageChange={setTranslationTargetLanguage}
+          onTranslateItem={translateConversationItem}
         />
       </div>
 
@@ -2020,12 +2306,14 @@ export function MeetingRoomPage({
           participant={localParticipant}
           targetLanguage={targetLanguage}
           autoStartCaption={autoStartCaption}
+          recordingEnabled={recordingEnabled}
           deviceSelection={deviceSelection}
           videoDevices={videoDevices}
           audioDevices={audioDevices}
           isChangingDevice={isChangingDevice}
           message={settingsMessage}
           captionSize={captionSize}
+          speechRecognitionLanguage={speechRecognitionLanguage}
           onClose={() => {
             setIsSettingsOpen(false)
             window.setTimeout(() => {
@@ -2039,6 +2327,8 @@ export function MeetingRoomPage({
             void changeMeetingDevice(kind, deviceId)
           }}
           onCaptionSizeChange={setCaptionSize}
+          onSpeechRecognitionLanguageChange={setSpeechRecognitionLanguage}
+          onRecordingEnabledChange={setRecordingEnabled}
         />
       )}
 
@@ -2243,10 +2533,12 @@ export function MeetingRoomPage({
           isParticipantsOpen={isParticipantsOpen}
           isSettingsOpen={isSettingsOpen}
           isHost={isCurrentUserHost}
+          recordingEnabled={recordingEnabled}
           chatUnreadCount={chatUnreadCount}
           viewMode={isScreenShareLayoutActive ? 'grid' : viewMode}
           showCaptionHint={showCaptionHint}
           captionMessage={speechMessage}
+          liveCaptionText={liveCaptionText}
           screenShareMessage={screenShareMessage}
           captionButtonRef={captionButtonRef}
           chatButtonRef={controlBarChatButtonRef}

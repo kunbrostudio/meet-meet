@@ -18,6 +18,11 @@ type ConversationPanelProps = {
   localParticipantId?: number
   targetLanguage: string
   translationTargetLanguage: LanguageCode
+  autoTranslationEnabled: boolean
+  canUseManualTranslation: boolean
+  canUseAutoTranslation: boolean
+  canUseTranscriptView: boolean
+  translationMode: string
   translations: TranslationRecord[]
   translatingKeys: string[]
   isOpen: boolean
@@ -29,11 +34,13 @@ type ConversationPanelProps = {
   canSendChatMessage?: boolean
   chatSendMessage?: string
   onTranslationTargetLanguageChange: (language: LanguageCode) => void
+  onAutoTranslationChange: (enabled: boolean) => void
   onTranslateItem: (
     sourceType: TranslationSourceType,
     sourceId: string,
     sourceText: string,
     sourceLanguage: LanguageCode,
+    options?: { force?: boolean, targetLanguage?: LanguageCode },
   ) => void | Promise<void>
 }
 
@@ -45,6 +52,11 @@ const languageLabels: Record<string, string> = {
   zh: '中文',
 }
 
+const lockedTranslationMessage =
+  '번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.'
+const lockedTranscriptMessage =
+  'Transcript 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.'
+
 export function ConversationPanel({
   participants,
   transcripts,
@@ -52,6 +64,11 @@ export function ConversationPanel({
   localParticipantId,
   targetLanguage,
   translationTargetLanguage,
+  autoTranslationEnabled,
+  canUseManualTranslation,
+  canUseAutoTranslation,
+  canUseTranscriptView,
+  translationMode,
   translations,
   translatingKeys,
   isOpen,
@@ -63,12 +80,36 @@ export function ConversationPanel({
   canSendChatMessage = true,
   chatSendMessage = '',
   onTranslationTargetLanguageChange,
+  onAutoTranslationChange,
   onTranslateItem,
 }: ConversationPanelProps) {
   const [chatInput, setChatInput] = useState('')
   const [isSendingChatMessage, setIsSendingChatMessage] = useState(false)
+  const [translationNotice, setTranslationNotice] = useState('')
+  const noticeTimerRef = useRef<number | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
+  const effectiveActiveTab =
+    !canUseTranscriptView && activeTab === 'transcript'
+      ? 'chat'
+      : activeTab
+
+  const showLockedFeatureNotice = (message: string) => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current)
+    }
+    setTranslationNotice(message)
+    noticeTimerRef.current = window.setTimeout(() => {
+      setTranslationNotice('')
+      noticeTimerRef.current = null
+    }, 3600)
+  }
+  const showLockedTranslationNotice = () => {
+    showLockedFeatureNotice(lockedTranslationMessage)
+  }
+  const showLockedTranscriptNotice = () => {
+    showLockedFeatureNotice(lockedTranscriptMessage)
+  }
   const getTranslationKey = (
     sourceType: TranslationSourceType,
     sourceId: string,
@@ -86,6 +127,12 @@ export function ConversationPanel({
     return translationTargetLanguage
   }
   const detectChatLanguage = (message: ChatMessage): LanguageCode => {
+    if (/[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(message.message)) {
+      return 'ko'
+    }
+    if (/[A-Za-z]/.test(message.message)) {
+      return 'en'
+    }
     if (
       message.language === 'ko'
       || message.language === 'en'
@@ -96,7 +143,7 @@ export function ConversationPanel({
       return message.language
     }
 
-    return /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(message.message) ? 'ko' : 'en'
+    return 'en'
   }
   const renderTranslationAction = (
     sourceType: TranslationSourceType,
@@ -116,31 +163,62 @@ export function ConversationPanel({
       effectiveTargetLanguage,
     )
     const isLoading = translatingKeys.includes(key)
+    const isFailed = translation?.status === 'failed'
+    const isSuccess = translation?.status === 'success'
+    const shouldShowButton =
+      canUseManualTranslation && (!autoTranslationEnabled || isFailed || isLoading)
 
     return (
       <div className="inline-translation">
-        <button
-          className="translation-button"
-          type="button"
-          disabled={isLoading || !sourceText.trim()}
-          onClick={() => void onTranslateItem(
-            sourceType,
-            sourceId,
-            sourceText,
-            sourceLanguage,
-          )}
-        >
-          {isLoading
-            ? '번역 중...'
-            : translation
-              ? '다시 번역'
-              : '번역하기'}
-        </button>
-        {translation && (
+        {isLoading && <p className="translation-loading">번역 중...</p>}
+        {isSuccess && (
           <p className="translation-result">
-            <span>{languageLabels[translation.targetLanguage] ?? translation.targetLanguage}</span>
+            <span>{translation.targetLanguage.toUpperCase()}</span>
             {translation.translatedText}
           </p>
+        )}
+        {isFailed && (
+          <p className="translation-failed">
+            번역에 실패했습니다.
+          </p>
+        )}
+        {shouldShowButton && (
+          <button
+            className="translation-button"
+            type="button"
+            disabled={isLoading || !sourceText.trim()}
+            onClick={() => {
+              console.debug('[translate-ui] manual click', {
+                sourceType,
+                sourceId,
+                sourceTextLength: sourceText.trim().length,
+                sourceLanguage,
+                targetLanguage: effectiveTargetLanguage,
+              })
+              void onTranslateItem(
+                sourceType,
+                sourceId,
+                sourceText,
+                sourceLanguage,
+                {
+                  force: isFailed,
+                  targetLanguage: effectiveTargetLanguage,
+                },
+              )
+            }}
+          >
+            {isFailed ? '다시 시도' : '번역하기'}
+          </button>
+        )}
+        {!canUseManualTranslation && !isSuccess && (
+          <button
+            className="translation-button is-locked"
+            type="button"
+            onClick={showLockedTranslationNotice}
+            aria-label="잠긴 번역 기능 안내 보기"
+          >
+            <Icon name="lock" size={12} /> 번역하기
+          </button>
         )}
       </div>
     )
@@ -155,7 +233,13 @@ export function ConversationPanel({
         behavior: 'smooth',
       })
     }
-  }, [activeTab, transcripts.length, chatMessages.length])
+  }, [effectiveActiveTab, transcripts.length, chatMessages.length])
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current)
+    }
+  }, [])
 
   const sendChatMessage = async () => {
     const message = chatInput.trim()
@@ -266,7 +350,7 @@ export function ConversationPanel({
                 <time>{time}</time>
               </div>
               <p>{chatMessage.message}</p>
-              {chatMessage.type === 'user' && renderTranslationAction(
+              {canUseManualTranslation && chatMessage.type === 'user' && renderTranslationAction(
                 'chat',
                 chatMessage.id,
                 chatMessage.message,
@@ -351,34 +435,105 @@ export function ConversationPanel({
           </button>
         </div>
         <div className="panel-tabs">
-          <button className={`panel-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => onTabChange('chat')}>
+          <button className={`panel-tab ${effectiveActiveTab === 'chat' ? 'active' : ''}`} onClick={() => onTabChange('chat')}>
             <Icon name="message" size={13} /> Chat
             {chatUnreadCount > 0 && (
               <span className="unread-badge">{Math.min(chatUnreadCount, 99)}</span>
             )}
           </button>
-          <button className={`panel-tab ${activeTab === 'transcript' ? 'active' : ''}`} onClick={() => onTabChange('transcript')}>
+          <button
+            className={[
+              'panel-tab',
+              effectiveActiveTab === 'transcript' ? 'active' : '',
+              !canUseTranscriptView ? 'is-locked' : '',
+            ].filter(Boolean).join(' ')}
+            onClick={() => {
+              if (!canUseTranscriptView) {
+                showLockedTranscriptNotice()
+                return
+              }
+              onTabChange('transcript')
+            }}
+            aria-disabled={!canUseTranscriptView}
+          >
             <Icon name="captions" size={13} /> Transcript
+            {!canUseTranscriptView && (
+              <span className="tab-lock-badge">
+                <Icon name="lock" size={10} />
+              </span>
+            )}
           </button>
         </div>
         <div className="translation-target-control">
+          {canUseAutoTranslation ? (
+            <label className="auto-translation-toggle">
+              <input
+                type="checkbox"
+                checked={autoTranslationEnabled}
+                onChange={(event) => onAutoTranslationChange(event.target.checked)}
+              />
+              자동 번역
+            </label>
+          ) : (
+            <button
+              className="translation-mode-pill is-locked"
+              type="button"
+              onClick={showLockedTranslationNotice}
+            >
+              <Icon name="lock" size={11} /> 자동 번역
+            </button>
+          )}
           <span>번역</span>
           <select
             value={translationTargetLanguage}
-            onChange={(event) => onTranslationTargetLanguageChange(
-              event.target.value as LanguageCode,
-            )}
+            onMouseDown={(event) => {
+              if (!canUseManualTranslation) {
+                event.preventDefault()
+                showLockedTranslationNotice()
+              }
+            }}
+            onKeyDown={(event) => {
+              if (!canUseManualTranslation) {
+                event.preventDefault()
+                showLockedTranslationNotice()
+              }
+            }}
+            onChange={(event) => {
+              if (!canUseManualTranslation) {
+                showLockedTranslationNotice()
+                return
+              }
+              onTranslationTargetLanguageChange(
+                event.target.value as LanguageCode,
+              )
+            }}
             aria-label="번역 언어"
+            aria-disabled={!canUseManualTranslation}
+            className={!canUseManualTranslation ? 'is-locked' : ''}
           >
             <option value="ko">한국어</option>
             <option value="en">English</option>
           </select>
+          {!canUseManualTranslation && (
+            <button
+              className="translation-lock-chip"
+              type="button"
+              onClick={showLockedTranslationNotice}
+            >
+              <Icon name="lock" size={11} />
+            </button>
+          )}
         </div>
+        {translationMode === 'free' && translationNotice && (
+          <p className="translation-plan-notice">
+            {translationNotice}
+          </p>
+        )}
       </div>
 
-      {activeTab === 'chat' ? renderChat() : renderTranscriptItems()}
+      {effectiveActiveTab === 'chat' ? renderChat() : renderTranscriptItems()}
 
-      {activeTab === 'transcript' && (
+      {effectiveActiveTab === 'transcript' && (
         <div className="language-bar">
           <span><Icon name="globe" size={14} /> Translation language</span>
           <strong>{languageLabels[translationTargetLanguage] ?? targetLanguage} <Icon name="chevron-down" size={12} /></strong>

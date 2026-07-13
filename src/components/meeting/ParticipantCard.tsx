@@ -185,6 +185,10 @@ export const ParticipantCard = memo(
     && previous.participant.isMicOn === next.participant.isMicOn
     && previous.participant.isSpeaking === next.participant.isSpeaking
     && previous.participant.mediaStream === next.participant.mediaStream
+    && previous.participant.cameraTrackSid === next.participant.cameraTrackSid
+    && previous.participant.cameraTrackId === next.participant.cameraTrackId
+    && previous.participant.microphoneTrackSid === next.participant.microphoneTrackSid
+    && previous.participant.microphoneTrackId === next.participant.microphoneTrackId
     && previous.transcript?.id === next.transcript?.id
     && previous.transcript?.translatedText === next.transcript?.translatedText
     && previous.transcript?.sourceText === next.transcript?.sourceText

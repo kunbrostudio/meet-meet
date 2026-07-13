@@ -2,12 +2,15 @@ import type {
   LanguageCode,
   TranslationSource,
 } from '../types/transcript'
+import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
 import { apiUrl } from './apiClient'
 
 export type TranslationRequest = {
   text: string
   sourceLanguage: LanguageCode
   targetLanguage: LanguageCode
+  sourceType?: string
+  sourceId?: string
 }
 
 export type TranslationResult = {
@@ -15,13 +18,32 @@ export type TranslationResult = {
   source: TranslationSource
 }
 
-export const USE_REAL_TRANSLATION_API = false
+export const USE_REAL_TRANSLATION_API =
+  import.meta.env.VITE_USE_REAL_TRANSLATION_API !== 'false'
 
 const commonTranslations: Record<
   string,
   Partial<Record<LanguageCode, string>>
 > = {
   '안녕하세요': {
+    ko: '안녕하세요',
+    en: 'Hello',
+    ja: 'こんにちは',
+    zh: '你好',
+  },
+  '안녕': {
+    ko: '안녕',
+    en: 'Hi',
+    ja: 'やあ',
+    zh: '嗨',
+  },
+  'Hi': {
+    ko: '안녕',
+    en: 'Hi',
+    ja: 'やあ',
+    zh: '嗨',
+  },
+  'Hello': {
     ko: '안녕하세요',
     en: 'Hello',
     ja: 'こんにちは',
@@ -44,6 +66,42 @@ const commonTranslations: Record<
     en: 'Nice to meet you.',
     ja: 'お会いできてうれしいです。',
     zh: '很高兴见到您。',
+  },
+  '반가워요': {
+    ko: '반가워요',
+    en: 'Nice to meet you.',
+    ja: 'お会いできてうれしいです。',
+    zh: '很高兴见到您。',
+  },
+  '저는 퇴근합니다': {
+    ko: '저는 퇴근합니다',
+    en: "I'm leaving work.",
+    ja: '私は退勤します。',
+    zh: '我要下班了。',
+  },
+  '저는 42살입니다': {
+    ko: '저는 42살입니다',
+    en: "I'm 42 years old.",
+    ja: '私は42歳です。',
+    zh: '我42岁。',
+  },
+  '여기까지 번역인가요': {
+    ko: '여기까지 번역인가요?',
+    en: 'Is this the translation up to here?',
+    ja: 'ここまでが翻訳ですか？',
+    zh: '翻译到这里吗？',
+  },
+  '난 제주에 살아요': {
+    ko: '난 제주에 살아요',
+    en: 'I live in Jeju.',
+    ja: '私は済州に住んでいます。',
+    zh: '我住在济州。',
+  },
+  '테스트 중입니다': {
+    ko: '테스트 중입니다',
+    en: "We're testing.",
+    ja: 'テスト中です。',
+    zh: '正在测试。',
   },
   '제 이름은 군한입니다': {
     ko: '제 이름은 군한입니다',
@@ -138,6 +196,8 @@ export async function translateText({
   text,
   sourceLanguage,
   targetLanguage,
+  sourceType,
+  sourceId,
 }: TranslationRequest): Promise<TranslationResult> {
   const context = {
     sourceText: text,
@@ -152,7 +212,7 @@ export async function translateText({
     }
   }
 
-  if (!USE_REAL_TRANSLATION_API) {
+  if (TRANSLATION_MODE_CONFIG.isPremiumLocked || !USE_REAL_TRANSLATION_API) {
     return {
       translatedText: await translateTextMock(
         text,
@@ -163,8 +223,19 @@ export async function translateText({
     }
   }
 
+  const endpointUrl = apiUrl('/api/translate')
+
   try {
-    const response = await fetch(apiUrl('/api/translate'), {
+    console.debug('[translation-service] request start', {
+      endpointUrl,
+      sourceType,
+      sourceId,
+      sourceTextLength: text.trim().length,
+      sourceLanguage,
+      targetLanguage,
+    })
+
+    const response = await fetch(endpointUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -193,13 +264,26 @@ export async function translateText({
 
     const translatedText = data.translatedText.trim()
 
+    console.debug('[translation-service] request success', {
+      endpointUrl,
+      sourceType,
+      sourceId,
+      sourceTextLength: text.trim().length,
+      sourceLanguage,
+      targetLanguage,
+    })
+
     return {
       translatedText,
       source: 'api',
     }
   } catch (error) {
-    console.error('[translation] API translation failed', {
+    console.warn('[translation-service] request failed', {
       ...context,
+      endpointUrl,
+      sourceType,
+      sourceId,
+      sourceTextLength: text.trim().length,
       apiCalled: true,
       apiSuccess: false,
       fallbackUsed: true,

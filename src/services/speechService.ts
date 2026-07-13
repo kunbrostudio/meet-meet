@@ -30,6 +30,7 @@ export type BrowserSpeechRecognition = {
   onend: (() => void) | null
   start: () => void
   stop: () => void
+  abort?: () => void
 }
 
 type SpeechRecognitionConstructor = new () => BrowserSpeechRecognition
@@ -43,6 +44,7 @@ export type StartSpeechRecognitionOptions = {
   language: LanguageCode | SpeechRecognitionLanguage
   onResult: (text: string) => void
   onInterimResult?: (text: string) => void
+  shouldRestart?: () => boolean
   onStart?: () => void
   onEnd?: () => void
   onError?: (errorCode: string) => void
@@ -63,6 +65,9 @@ const recognitionLanguageBySource: Record<
 
 let activeRecognition: BrowserSpeechRecognition | null = null
 let recognitionStarted = false
+let manualStopRequested = false
+let restartTimer: number | null = null
+let isStartingRecognition = false
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
   const speechWindow = window as SpeechRecognitionWindow
@@ -96,24 +101,31 @@ export function startSpeechRecognition({
   language,
   onResult,
   onInterimResult,
+  shouldRestart,
   onStart,
   onEnd,
   onError,
 }: StartSpeechRecognitionOptions): boolean {
-  if (activeRecognition) {
+  if (activeRecognition || isStartingRecognition) {
     return false
   }
+
+  manualStopRequested = false
+  isStartingRecognition = true
 
   const recognition = createSpeechRecognition(language)
 
   if (!recognition) {
+    isStartingRecognition = false
     onError?.('unsupported')
     return false
   }
 
   activeRecognition = recognition
+  let lastErrorCode = ''
 
   recognition.onstart = () => {
+    isStartingRecognition = false
     recognitionStarted = true
     onStart?.()
   }
@@ -132,18 +144,45 @@ export function startSpeechRecognition({
   }
 
   recognition.onerror = (event) => {
+    lastErrorCode = event.error
     if (event.error !== 'aborted') {
       console.warn('[speech] recognition error', event.error)
     }
+    isStartingRecognition = false
     recognitionStarted = false
     activeRecognition = null
     onError?.(event.error)
   }
 
   recognition.onend = () => {
+    const canRestart =
+      !manualStopRequested
+      && shouldRestart?.() === true
+      && !['not-allowed', 'service-not-allowed', 'network'].includes(lastErrorCode)
+
     recognitionStarted = false
     activeRecognition = null
     onEnd?.()
+
+    if (canRestart) {
+      if (restartTimer !== null) {
+        window.clearTimeout(restartTimer)
+      }
+      restartTimer = window.setTimeout(() => {
+        restartTimer = null
+        if (!manualStopRequested && shouldRestart?.() === true) {
+          startSpeechRecognition({
+            language,
+            onResult,
+            onInterimResult,
+            shouldRestart,
+            onStart,
+            onEnd,
+            onError,
+          })
+        }
+      }, 350)
+    }
   }
 
   try {
@@ -151,6 +190,7 @@ export function startSpeechRecognition({
     return true
   } catch (error) {
     console.warn('[speech] recognition error', error)
+    isStartingRecognition = false
     recognitionStarted = false
     activeRecognition = null
     onError?.('start-failed')
@@ -159,7 +199,14 @@ export function startSpeechRecognition({
 }
 
 export function stopSpeechRecognition(): void {
+  manualStopRequested = true
+  if (restartTimer !== null) {
+    window.clearTimeout(restartTimer)
+    restartTimer = null
+  }
+
   if (!activeRecognition) {
+    isStartingRecognition = false
     recognitionStarted = false
     return
   }
@@ -169,10 +216,11 @@ export function stopSpeechRecognition(): void {
   } catch (error) {
     console.warn('[speech] recognition error', error)
     activeRecognition = null
+    isStartingRecognition = false
     recognitionStarted = false
   }
 }
 
 export function getSpeechRecognitionStatus(): boolean {
-  return recognitionStarted || activeRecognition !== null
+  return recognitionStarted || activeRecognition !== null || isStartingRecognition
 }

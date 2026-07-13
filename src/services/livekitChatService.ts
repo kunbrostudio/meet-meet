@@ -342,6 +342,13 @@ function isTranslationRecord(value: unknown): value is TranslationRecord {
     && typeof translation.translatedText === 'string'
     && typeof translation.sourceLanguage === 'string'
     && typeof translation.targetLanguage === 'string'
+    && (
+      translation.status === undefined
+      || translation.status === 'pending'
+      || translation.status === 'success'
+      || translation.status === 'failed'
+      || translation.status === 'skipped'
+    )
     && typeof translation.createdAt === 'string'
   )
 }

@@ -109,7 +109,15 @@ VITE_ENABLE_MOCK_DATA=true
 
 ## 번역 상태
 
-현재 프론트엔드의 `USE_REAL_TRANSLATION_API` 기본값은 `false`입니다. 따라서 기본 실행에서는 `/api/translate`를 호출하지 않고 로컬 fallback 번역을 사용합니다.
+번역 UI는 `VITE_TRANSLATION_MODE`로 제어합니다.
+
+- `dev`: 개발 중 수동/자동 번역 UI를 테스트할 수 있습니다.
+- `free`: 무료 MVP 모드입니다. 번역 버튼은 숨기고 프리미엄 준비 중 안내를 보여줍니다.
+- `premium`: 수동/자동 번역 UI를 활성화할 수 있는 구조입니다.
+
+값을 지정하지 않으면 개발 서버에서는 `dev`, 배포 빌드에서는 `free`로 동작합니다.
+
+실제 번역 API 호출은 별도로 `VITE_USE_REAL_TRANSLATION_API`로 제어합니다. 기본값은 실제 API 사용이며, 디버그나 비용 제어가 필요하면 `.env`에 `VITE_USE_REAL_TRANSLATION_API=false`를 지정해 로컬 fallback 번역만 사용할 수 있습니다.
 
 나중에 실제 번역 API를 켜더라도 OpenAI API 쿼터/결제/네트워크 오류가 발생하면 앱은 fallback 번역으로 계속 동작해야 합니다.
 

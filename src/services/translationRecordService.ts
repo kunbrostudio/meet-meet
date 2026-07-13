@@ -5,6 +5,14 @@ import type {
 } from '../types/translation'
 import { translateText } from './translationService'
 
+function isFallbackTranslation(
+  translatedText: string,
+  targetLanguage: string,
+): boolean {
+  const prefix = `[${targetLanguage.toUpperCase()}]`
+  return translatedText.trim().startsWith(prefix)
+}
+
 export function getTranslationCacheKey(
   sourceType: TranslationRecord['sourceType'],
   sourceId: string,
@@ -18,19 +26,68 @@ function createTranslationId(): string {
     ?? `translation-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+export function shouldAutoTranslateText(
+  text: string,
+  sourceLanguage: string,
+  previousText?: string,
+): boolean {
+  const normalizedText = text.trim()
+
+  if (!normalizedText) {
+    return false
+  }
+
+  if (!/[A-Za-zㄱ-ㅎㅏ-ㅣ가-힣]/.test(normalizedText)) {
+    return false
+  }
+
+  if (previousText) {
+    const normalizedPrevious = previousText.trim()
+    if (
+      normalizedPrevious === normalizedText
+      || normalizedPrevious.includes(normalizedText)
+      || normalizedText.includes(normalizedPrevious)
+    ) {
+      return false
+    }
+  }
+
+  if (sourceLanguage === 'ko') {
+    const koreanLetters = normalizedText.match(/[가-힣]/g)?.length ?? 0
+    return koreanLetters > 2
+  }
+
+  if (sourceLanguage === 'en') {
+    const words = normalizedText.split(/\s+/).filter(Boolean)
+    return words.length >= 2
+  }
+
+  return normalizedText.length > 3
+}
+
 export function dedupeTranslations(
   translations: TranslationRecord[],
 ): TranslationRecord[] {
   const map = new Map<string, TranslationRecord>()
 
   for (const translation of translations) {
+    const normalizedTranslation: TranslationRecord = {
+      ...translation,
+      status:
+        translation.status
+        ?? (
+          translation.translatedText.trim()
+            ? 'success'
+            : 'failed'
+        ),
+    }
     map.set(
       getTranslationCacheKey(
-        translation.sourceType,
-        translation.sourceId,
-        translation.targetLanguage,
+        normalizedTranslation.sourceType,
+        normalizedTranslation.sourceId,
+        normalizedTranslation.targetLanguage,
       ),
-      translation,
+      normalizedTranslation,
     )
   }
 
@@ -99,22 +156,67 @@ export async function createManualTranslation(
     throw new Error('EMPTY_TRANSLATION_SOURCE')
   }
 
-  const result = await translateText({
-    text: sourceText,
-    sourceLanguage: input.sourceLanguage,
-    targetLanguage: input.targetLanguage,
-  })
+  try {
+    console.debug('[translation] request', {
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      sourceTextLength: sourceText.length,
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+    })
 
-  return {
-    type: 'translation',
-    translationId: createTranslationId(),
-    roomCode: input.roomCode,
-    sourceType: input.sourceType,
-    sourceId: input.sourceId,
-    sourceText,
-    translatedText: result.translatedText,
-    sourceLanguage: input.sourceLanguage,
-    targetLanguage: input.targetLanguage,
-    createdAt: new Date().toISOString(),
+    const result = await translateText({
+      text: sourceText,
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+    })
+
+    if (isFallbackTranslation(result.translatedText, input.targetLanguage)) {
+      return {
+        type: 'translation',
+        translationId: createTranslationId(),
+        roomCode: input.roomCode,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        sourceText,
+        translatedText: '',
+        sourceLanguage: input.sourceLanguage,
+        targetLanguage: input.targetLanguage,
+        status: 'skipped',
+        errorMessage: 'fallback-translation',
+        createdAt: new Date().toISOString(),
+      }
+    }
+
+    return {
+      type: 'translation',
+      translationId: createTranslationId(),
+      roomCode: input.roomCode,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      sourceText,
+      translatedText: result.translatedText,
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      status: 'success',
+      createdAt: new Date().toISOString(),
+    }
+  } catch (error) {
+    return {
+      type: 'translation',
+      translationId: createTranslationId(),
+      roomCode: input.roomCode,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      sourceText,
+      translatedText: '',
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      status: 'failed',
+      errorMessage: error instanceof Error ? error.message : String(error),
+      createdAt: new Date().toISOString(),
+    }
   }
 }

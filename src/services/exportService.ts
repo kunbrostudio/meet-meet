@@ -99,6 +99,8 @@ export function createMeetingMarkdown({
       const manualTranslation = translations.find((translation) => (
         translation.sourceType === 'transcript'
         && translation.sourceId === transcriptSourceId
+        && translation.status === 'success'
+        && translation.translatedText.trim()
       ))
 
       if (manualTranslation) {
@@ -122,7 +124,10 @@ export function createMeetingMarkdown({
           hour12: false,
         }).format(new Date(message.createdAt))
         const translation = translations.find((item) => (
-          item.sourceType === 'chat' && item.sourceId === message.id
+          item.sourceType === 'chat'
+          && item.sourceId === message.id
+          && item.status === 'success'
+          && item.translatedText.trim()
         ))
         return [
           `- ${time} · **${message.senderName}**: ${message.message}`,

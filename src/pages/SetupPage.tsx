@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/common/Icon'
+import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
 import {
   getAudioInputDevices,
   getVideoInputDevices,
@@ -59,6 +60,12 @@ export function SetupPage({
   const videoRef = useRef<HTMLVideoElement>(null)
   const isMountedRef = useRef(true)
   const copyMessageTimerRef = useRef<number | null>(null)
+  const autoMediaStartedRef = useRef(false)
+  const languageLockTimerRef = useRef<number | null>(null)
+  const mediaConnectedNoticeTimerRef = useRef<number | null>(null)
+  const isLanguageLocked = TRANSLATION_MODE_CONFIG.isPremiumLocked
+  const [languageLockMessage, setLanguageLockMessage] = useState('')
+  const [showMediaConnectedNotice, setShowMediaConnectedNotice] = useState(false)
 
   useEffect(() => {
     if (videoRef.current) {
@@ -74,8 +81,27 @@ export function SetupPage({
       if (copyMessageTimerRef.current !== null) {
         window.clearTimeout(copyMessageTimerRef.current)
       }
+      if (languageLockTimerRef.current !== null) {
+        window.clearTimeout(languageLockTimerRef.current)
+      }
+      if (mediaConnectedNoticeTimerRef.current !== null) {
+        window.clearTimeout(mediaConnectedNoticeTimerRef.current)
+      }
     }
   }, [])
+
+  const showLanguageLockMessage = () => {
+    if (languageLockTimerRef.current !== null) {
+      window.clearTimeout(languageLockTimerRef.current)
+    }
+    setLanguageLockMessage(
+      '번역 언어 설정은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.',
+    )
+    languageLockTimerRef.current = window.setTimeout(() => {
+      setLanguageLockMessage('')
+      languageLockTimerRef.current = null
+    }, 3600)
+  }
 
   const copyRoomInformation = async (
     text: string,
@@ -114,7 +140,7 @@ export function SetupPage({
     })
   }
 
-  const connectMediaDevices = async (
+  const connectMediaDevices = useCallback(async (
     selection: MediaDeviceSelection,
   ) => {
     setIsCheckingMedia(true)
@@ -162,6 +188,14 @@ export function SetupPage({
         cameraEnabled: cameraOn,
         microphoneEnabled: micOn,
       })
+      setShowMediaConnectedNotice(true)
+      if (mediaConnectedNoticeTimerRef.current !== null) {
+        window.clearTimeout(mediaConnectedNoticeTimerRef.current)
+      }
+      mediaConnectedNoticeTimerRef.current = window.setTimeout(() => {
+        setShowMediaConnectedNotice(false)
+        mediaConnectedNoticeTimerRef.current = null
+      }, 3200)
     } catch (error) {
       if (isMountedRef.current) {
         const [nextVideoDevices, nextAudioDevices] = await Promise.all([
@@ -181,11 +215,21 @@ export function SetupPage({
         setIsCheckingMedia(false)
       }
     }
-  }
+  }, [
+    cameraOn,
+    micOn,
+    onDeviceSelectionChange,
+    onLocalMediaChange,
+  ])
 
-  const checkCameraAndMicrophone = () => {
+  useEffect(() => {
+    if (autoMediaStartedRef.current || localMedia.stream) {
+      return
+    }
+
+    autoMediaStartedRef.current = true
     void connectMediaDevices(deviceSelection)
-  }
+  }, [connectMediaDevices, deviceSelection, localMedia.stream])
 
   const changeVideoDevice = (videoDeviceId: string) => {
     const nextSelection = {
@@ -272,6 +316,32 @@ export function SetupPage({
     </div>
   )
 
+  const mediaStatus = (
+    <>
+      {mediaError ? (
+        <div className="setup-status setup-status-error">
+          {mediaError}
+          <button
+            className="setup-retry-button"
+            type="button"
+            onClick={() => void connectMediaDevices(deviceSelection)}
+            disabled={isCheckingMedia}
+          >
+            {isCheckingMedia ? '권한 요청 중...' : '권한 다시 요청'}
+          </button>
+        </div>
+      ) : isCheckingMedia ? (
+        <div className="setup-status">
+          <span className="meeting-connection-spinner" /> 카메라와 마이크를 연결하고 있어요
+        </div>
+      ) : showMediaConnectedNotice ? (
+        <div className="setup-status setup-status-success-fade">
+          <Icon name="check" size={14} /> 카메라와 마이크가 정상적으로 연결되었어요
+        </div>
+      ) : null}
+    </>
+  )
+
   return (
     <section className="setup-page">
       <div className="container">
@@ -336,6 +406,7 @@ export function SetupPage({
               </div>
             </div>
             {deviceSelectors}
+            {mediaStatus}
           </div>
 
           <div className="setup-options">
@@ -345,31 +416,84 @@ export function SetupPage({
               <label htmlFor="display-name">표시 이름</label>
               <input className="input" id="display-name" value={name} onChange={(event) => setName(event.target.value)} />
             </div>
-            <div className="field">
+            <div className={`field ${isLanguageLocked ? 'is-locked-field' : ''}`}>
               <label htmlFor="language">내가 말할 언어</label>
-              <div className="select-wrap">
-                <select id="language" value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value as LanguageCode)}>
+              <div className={`select-wrap ${isLanguageLocked ? 'is-locked' : ''}`}>
+                <select
+                  id="language"
+                  value={sourceLanguage}
+                  aria-disabled={isLanguageLocked}
+                  className={isLanguageLocked ? 'is-locked' : ''}
+                  onMouseDown={(event) => {
+                    if (isLanguageLocked) {
+                      event.preventDefault()
+                      showLanguageLockMessage()
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (isLanguageLocked) {
+                      event.preventDefault()
+                      showLanguageLockMessage()
+                    }
+                  }}
+                  onChange={(event) => {
+                    if (isLanguageLocked) {
+                      showLanguageLockMessage()
+                      return
+                    }
+                    setSourceLanguage(event.target.value as LanguageCode)
+                  }}
+                >
                   <option value="ko">한국어 (Korean)</option>
                   <option value="en">English</option>
                   <option value="ja">日本語 (Japanese)</option>
                   <option value="fr">Français (French)</option>
                   <option value="zh">中文 (Chinese)</option>
                 </select>
-                <Icon name="chevron-down" size={16} />
+                <Icon name={isLanguageLocked ? 'lock' : 'chevron-down'} size={16} />
               </div>
             </div>
-            <div className="field">
+            <div className={`field ${isLanguageLocked ? 'is-locked-field' : ''}`}>
               <label htmlFor="translate-language">번역해서 볼 언어</label>
-              <div className="select-wrap">
-                <select id="translate-language" value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value as LanguageCode)}>
+              <div className={`select-wrap ${isLanguageLocked ? 'is-locked' : ''}`}>
+                <select
+                  id="translate-language"
+                  value={targetLanguage}
+                  aria-disabled={isLanguageLocked}
+                  className={isLanguageLocked ? 'is-locked' : ''}
+                  onMouseDown={(event) => {
+                    if (isLanguageLocked) {
+                      event.preventDefault()
+                      showLanguageLockMessage()
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (isLanguageLocked) {
+                      event.preventDefault()
+                      showLanguageLockMessage()
+                    }
+                  }}
+                  onChange={(event) => {
+                    if (isLanguageLocked) {
+                      showLanguageLockMessage()
+                      return
+                    }
+                    setTargetLanguage(event.target.value as LanguageCode)
+                  }}
+                >
                   <option value="ko">한국어 (Korean)</option>
                   <option value="en">English</option>
                   <option value="ja">日本語 (Japanese)</option>
                   <option value="zh">中文 (Chinese)</option>
                 </select>
-                <Icon name="chevron-down" size={16} />
+                <Icon name={isLanguageLocked ? 'lock' : 'chevron-down'} size={16} />
               </div>
             </div>
+            {languageLockMessage && (
+              <div className="setup-status setup-status-locked" role="status">
+                <Icon name="lock" size={14} /> {languageLockMessage}
+              </div>
+            )}
             {canSetParticipantCount && (
               <div className="field">
                 <label htmlFor="participant-count">참가자 수</label>
@@ -401,20 +525,6 @@ export function SetupPage({
               </span>
               <span>입장 후 실시간 자막 자동 시작</span>
             </label>
-            <button
-              className="button button-secondary button-wide device-check-button"
-              type="button"
-              onClick={checkCameraAndMicrophone}
-              disabled={isCheckingMedia}
-            >
-              <Icon name="camera" size={16} />
-              {isCheckingMedia ? '권한 확인 중...' : '카메라/마이크 확인'}
-            </button>
-            {mediaError ? (
-              <div className="setup-status setup-status-error">{mediaError}</div>
-            ) : localMedia.stream ? (
-              <div className="setup-status"><Icon name="check" size={14} /> 카메라와 마이크가 정상적으로 연결되었어요</div>
-            ) : null}
             <button className="button button-primary button-wide" type="button" onClick={startMeeting}>
               Start <Icon name="arrow-right" size={16} />
             </button>

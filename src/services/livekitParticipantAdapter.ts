@@ -16,6 +16,7 @@ type LiveKitParticipantMetadata = {
 
 type ParticipantMappingOptions = {
   defaultLanguage?: LanguageCode
+  trackVersion?: number
 }
 
 const supportedLanguages = new Set<LanguageCode>([
@@ -84,6 +85,24 @@ function hasActiveTrack(
   )
 }
 
+function getPublicationTrackSid(
+  participant: LiveKitParticipant,
+  source: Track.Source.Camera | Track.Source.Microphone,
+): string | null {
+  const publication = participant.getTrackPublication(source)
+  return publication?.trackSid ?? publication?.track?.sid ?? null
+}
+
+function getPublicationTrackId(
+  participant: LiveKitParticipant,
+  source: Track.Source.Camera | Track.Source.Microphone,
+): string | null {
+  return participant.getTrackPublication(source)
+    ?.track
+    ?.mediaStreamTrack
+    ?.id ?? null
+}
+
 const participantVideoStreamCache = new Map<
   string,
   { trackId: string, stream: MediaStream }
@@ -149,6 +168,11 @@ function mapLiveKitParticipant(
     avatarLabel: getParticipantInitials(name),
     mediaStream: createParticipantMediaStream(participant),
     liveKitIdentity: participant.identity,
+    cameraTrackSid: getPublicationTrackSid(participant, Track.Source.Camera),
+    cameraTrackId: getPublicationTrackId(participant, Track.Source.Camera),
+    microphoneTrackSid: getPublicationTrackSid(participant, Track.Source.Microphone),
+    microphoneTrackId: getPublicationTrackId(participant, Track.Source.Microphone),
+    liveKitTrackVersion: options.trackVersion,
   }
 }
 

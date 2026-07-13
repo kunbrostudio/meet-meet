@@ -15,4 +15,9 @@ export type Participant = {
   avatarLabel: string
   mediaStream?: MediaStream | null
   liveKitIdentity?: string
+  cameraTrackSid?: string | null
+  cameraTrackId?: string | null
+  microphoneTrackSid?: string | null
+  microphoneTrackId?: string | null
+  liveKitTrackVersion?: number
 }

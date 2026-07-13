@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Icon } from '../components/common/Icon'
 import { ENABLE_MOCK_DATA } from '../constants/mockData'
+import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
 import { mockSummary } from '../fixtures/mockSummary'
 import { mockTranscripts } from '../fixtures/mockTranscripts'
 import { exportMeetingAsMarkdown } from '../services/exportService'
@@ -45,6 +46,9 @@ type MeetingSummaryPageProps = {
   onDeleteRecord: () => void
   onViewHistory: () => void
 }
+
+const lockedTranslationMessage =
+  '회의록 번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.'
 
 export function MeetingSummaryPage({
   meetingId,
@@ -197,6 +201,11 @@ export function MeetingSummaryPage({
     sourceText: string,
     sourceLanguage: LanguageCode,
   ) => {
+    if (!TRANSLATION_MODE_CONFIG.canUseManualTranslation) {
+      setDeleteMessage(lockedTranslationMessage)
+      return
+    }
+
     const target =
       sourceLanguage === 'ko'
         ? 'en'
@@ -204,8 +213,14 @@ export function MeetingSummaryPage({
           ? 'ko'
           : translationTargetLanguage
     const cacheKey = getTranslationCacheKey(sourceType, sourceId, target)
+    const existingTranslation = findTranslation(
+      translations,
+      sourceType,
+      sourceId,
+      target,
+    )
 
-    if (findTranslation(translations, sourceType, sourceId, target)) {
+    if (existingTranslation?.status === 'success') {
       return
     }
 
@@ -222,7 +237,14 @@ export function MeetingSummaryPage({
         sourceLanguage,
         targetLanguage: target,
       })
-      const nextTranslations = dedupeTranslations([...translations, translation])
+      const nextTranslations = dedupeTranslations([
+        ...translations.filter((item) => !(
+          item.sourceType === sourceType
+          && item.sourceId === sourceId
+          && item.targetLanguage === target
+        )),
+        translation,
+      ])
       setTranslations(nextTranslations)
       saveTranslations(meetingId, nextTranslations)
     } catch (error) {
@@ -259,34 +281,77 @@ export function MeetingSummaryPage({
       effectiveTargetLanguage,
     )
     const isLoading = translatingKeys.includes(key)
+    const isFailed = translation?.status === 'failed'
+    const isSuccess = translation?.status === 'success'
+    const canUseManualTranslation = TRANSLATION_MODE_CONFIG.canUseManualTranslation
+    const showLockedTranslation = !canUseManualTranslation && !isSuccess
 
     return (
       <div className="summary-translation">
-        <button
-          className="translation-button"
-          type="button"
-          disabled={isLoading || !sourceText.trim()}
-          onClick={() => void translateSummaryItem(
-            sourceType,
-            sourceId,
-            sourceText,
-            sourceLanguage,
-          )}
-        >
-          {isLoading
-            ? '번역 중...'
-            : translation
-              ? '다시 번역'
-              : '번역하기'}
-        </button>
-        {translation && (
+        {canUseManualTranslation && isLoading && (
+          <p className="translation-loading">번역 중...</p>
+        )}
+        {isSuccess && (
           <p className="translation-result">
             <span>{translation.targetLanguage.toUpperCase()}</span>
             {translation.translatedText}
           </p>
         )}
+        {canUseManualTranslation && isFailed && (
+          <>
+            <p className="translation-failed">번역에 실패했습니다.</p>
+            <button
+              className="translation-button"
+              type="button"
+              disabled={isLoading || !sourceText.trim()}
+              onClick={() => void translateSummaryItem(
+                sourceType,
+                sourceId,
+                sourceText,
+                sourceLanguage,
+              )}
+            >
+              다시 시도
+            </button>
+          </>
+        )}
+        {!isSuccess && !isFailed && canUseManualTranslation && (
+          <button
+            className="translation-button"
+            type="button"
+            disabled={isLoading || !sourceText.trim()}
+            onClick={() => void translateSummaryItem(
+              sourceType,
+              sourceId,
+              sourceText,
+              sourceLanguage,
+            )}
+          >
+            번역하기
+          </button>
+        )}
+        {showLockedTranslation && (
+          <button
+            className="translation-button is-locked"
+            type="button"
+            onClick={() => setDeleteMessage(lockedTranslationMessage)}
+            aria-label="잠긴 번역 기능 안내 보기"
+          >
+            <Icon name="lock" size={12} /> 번역하기
+          </button>
+        )}
       </div>
     )
+  }
+
+  const detectSummaryChatLanguage = (message: string): LanguageCode => {
+    if (/[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(message)) {
+      return 'ko'
+    }
+    if (/[A-Za-z]/.test(message)) {
+      return 'en'
+    }
+    return 'en'
   }
 
   return (
@@ -349,14 +414,43 @@ export function MeetingSummaryPage({
             번역 언어
             <select
               value={translationTargetLanguage}
-              onChange={(event) => setTranslationTargetLanguage(
-                event.target.value as LanguageCode,
-              )}
+              onMouseDown={(event) => {
+                if (!TRANSLATION_MODE_CONFIG.canUseManualTranslation) {
+                  event.preventDefault()
+                  setDeleteMessage(lockedTranslationMessage)
+                }
+              }}
+              onKeyDown={(event) => {
+                if (!TRANSLATION_MODE_CONFIG.canUseManualTranslation) {
+                  event.preventDefault()
+                  setDeleteMessage(lockedTranslationMessage)
+                }
+              }}
+              onChange={(event) => {
+                if (!TRANSLATION_MODE_CONFIG.canUseManualTranslation) {
+                  setDeleteMessage(lockedTranslationMessage)
+                  return
+                }
+                setTranslationTargetLanguage(
+                  event.target.value as LanguageCode,
+                )
+              }}
+              aria-disabled={!TRANSLATION_MODE_CONFIG.canUseManualTranslation}
+              className={!TRANSLATION_MODE_CONFIG.canUseManualTranslation ? 'is-locked' : ''}
             >
               <option value="ko">한국어</option>
               <option value="en">English</option>
             </select>
           </label>
+          {!TRANSLATION_MODE_CONFIG.canUseManualTranslation && (
+            <button
+              className="translation-lock-chip"
+              type="button"
+              onClick={() => setDeleteMessage(lockedTranslationMessage)}
+            >
+              <Icon name="lock" size={11} />
+            </button>
+          )}
         </div>
 
         <div className="summary-stats">
@@ -421,13 +515,15 @@ export function MeetingSummaryPage({
                     <div className="summary-transcript-row" key={item.id}>
                       <time>{item.time}</time>
                       <strong>{participant?.name ?? item.speakerName}</strong>
-                      <p>{item.sourceText}</p>
-                      {renderTranslation(
-                        'transcript',
-                        item.transcriptId ?? String(item.id),
-                        item.sourceText,
-                        item.sourceLanguage,
-                      )}
+                      <div className="summary-record-content">
+                        <p>{item.sourceText}</p>
+                        {renderTranslation(
+                          'transcript',
+                          item.transcriptId ?? String(item.id),
+                          item.sourceText,
+                          item.sourceLanguage,
+                        )}
+                      </div>
                     </div>
                   )
                 })}
@@ -451,13 +547,15 @@ export function MeetingSummaryPage({
                       }).format(new Date(message.createdAt))}
                     </time>
                     <strong>{message.senderName}</strong>
-                    <p>{message.message}</p>
-                    {message.type === 'user' && renderTranslation(
-                      'chat',
-                      message.id,
-                      message.message,
-                      message.language === 'en' ? 'en' : 'ko',
-                    )}
+                    <div className="summary-record-content">
+                      <p>{message.message}</p>
+                      {message.type === 'user' && renderTranslation(
+                        'chat',
+                        message.id,
+                        message.message,
+                        detectSummaryChatLanguage(message.message),
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

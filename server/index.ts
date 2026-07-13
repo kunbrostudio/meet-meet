@@ -352,11 +352,14 @@ app.post('/api/translate', async (request, response) => {
     targetLanguage,
   } = request.body as TranslateRequestBody
   const text = typeof rawText === 'string' ? rawText : sourceText
+  const apiKey = process.env.OPENAI_API_KEY
 
-  console.info('[translation-server] Request received', {
-    sourceText: typeof text === 'string' ? text : '[invalid]',
+  console.info('[api-server] /api/translate request', {
+    textLength: typeof text === 'string' ? text.trim().length : 0,
     sourceLanguage,
     targetLanguage,
+    translationEnabled: true,
+    openaiConfigured: Boolean(apiKey),
   })
 
   if (
@@ -377,8 +380,6 @@ app.post('/api/translate', async (request, response) => {
     response.json({ translatedText: text })
     return
   }
-
-  const apiKey = process.env.OPENAI_API_KEY
 
   if (!apiKey) {
     console.error(

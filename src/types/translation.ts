@@ -12,6 +12,8 @@ export type TranslationRecord = {
   translatedText: string
   sourceLanguage: LanguageCode
   targetLanguage: LanguageCode
+  status: 'pending' | 'success' | 'failed' | 'skipped'
+  errorMessage?: string
   createdAt: string
 }
 

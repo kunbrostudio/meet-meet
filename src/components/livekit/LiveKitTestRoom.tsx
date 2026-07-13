@@ -13,7 +13,7 @@ import {
   type RemoteParticipant,
   type Room,
 } from 'livekit-client'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   LiveKitConnectionDetails,
   LiveKitDataController,
@@ -582,6 +582,7 @@ function LiveKitParticipantObserver({
   onChange: (participants: Participant[]) => void
 }) {
   const room = useRoomContext()
+  const [trackRevision, setTrackRevision] = useState(0)
   const liveKitParticipants = useParticipants({
     updateOnlyOn: [
       RoomEvent.ParticipantConnected,
@@ -599,14 +600,48 @@ function LiveKitParticipantObserver({
       RoomEvent.ParticipantNameChanged,
     ],
   })
+
+  useEffect(() => {
+    const refreshParticipants = () => {
+      setTrackRevision((revision) => revision + 1)
+    }
+    const observedEvents = [
+      RoomEvent.ParticipantConnected,
+      RoomEvent.ParticipantDisconnected,
+      RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished,
+      RoomEvent.TrackSubscribed,
+      RoomEvent.TrackUnsubscribed,
+      RoomEvent.TrackMuted,
+      RoomEvent.TrackUnmuted,
+      RoomEvent.LocalTrackPublished,
+      RoomEvent.LocalTrackUnpublished,
+      RoomEvent.ActiveSpeakersChanged,
+      RoomEvent.ParticipantMetadataChanged,
+      RoomEvent.ParticipantNameChanged,
+    ] as const
+
+    observedEvents.forEach((eventName) => {
+      room.on(eventName, refreshParticipants)
+    })
+    refreshParticipants()
+
+    return () => {
+      observedEvents.forEach((eventName) => {
+        room.off(eventName, refreshParticipants)
+      })
+    }
+  }, [room])
+
   const mappedParticipants = useMemo(
     () => mapLiveKitParticipantsToParticipants(
       room.localParticipant,
       liveKitParticipants.filter(
         (participant): participant is RemoteParticipant => !participant.isLocal,
       ),
+      { trackVersion: trackRevision },
     ),
-    [liveKitParticipants, room.localParticipant],
+    [liveKitParticipants, room.localParticipant, trackRevision],
   )
 
   useEffect(() => {

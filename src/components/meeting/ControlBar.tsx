@@ -21,9 +21,11 @@ type ControlBarProps = {
   chatButtonRef?: RefObject<HTMLButtonElement | null>
   participantsButtonRef?: RefObject<HTMLButtonElement | null>
   settingsButtonRef?: RefObject<HTMLButtonElement | null>
+  showTranslationLockButton?: boolean
   onToggleMicrophone: () => void
   onToggleCaption: () => void
   onToggleCamera: () => void
+  onLockedTranslationClick?: () => void
   onToggleScreenShare: () => void
   onToggleViewMode: () => void
   onToggleParticipants: () => void
@@ -51,9 +53,11 @@ export function ControlBar({
   chatButtonRef,
   participantsButtonRef,
   settingsButtonRef,
+  showTranslationLockButton = false,
   onToggleMicrophone,
   onToggleCaption,
   onToggleCamera,
+  onLockedTranslationClick,
   onToggleScreenShare,
   onToggleViewMode,
   onToggleParticipants,
@@ -61,6 +65,13 @@ export function ControlBar({
   onToggleSettings,
   onRequestEnd,
 }: ControlBarProps) {
+  const isCaptionMessageError = Boolean(
+    captionMessage
+    && captionMessage !== '말하면 자동으로 자막이 기록됩니다.'
+    && captionMessage !== '실시간 자막 대기 중'
+    && captionMessage !== '실시간 번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.'
+  )
+
   return (
     <div className="meeting-controls-wrap">
       <div className="caption-status-stack">
@@ -72,7 +83,7 @@ export function ControlBar({
             실시간 자막을 켜면 말한 내용이 자동으로 기록돼요.
           </div>
         )}
-        <div className={`speech-status ${captionMessage ? 'has-error' : ''}`}>
+        <div className={`speech-status ${isCaptionMessageError ? 'has-error' : ''}`}>
           {captionMessage
             || (isCaptionActive ? '실시간 자막 기록 중' : '실시간 자막 꺼짐')}
         </div>
@@ -105,6 +116,15 @@ export function ControlBar({
           label={participant?.isCameraOn ? '카메라 끄기' : '카메라 켜기'}
           onClick={onToggleCamera}
         />
+        {showTranslationLockButton && (
+          <ControlButton
+            className="is-locked"
+            icon="globe"
+            label="실시간 번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다."
+            lockBadge
+            onClick={onLockedTranslationClick}
+          />
+        )}
         <ControlButton
           className={isScreenSharing ? 'is-active' : ''}
           icon="screen"
@@ -161,6 +181,7 @@ type ControlButtonProps = {
   className?: string
   icon:
     | 'captions'
+    | 'globe'
     | 'grid'
     | 'message'
     | 'mic'
@@ -173,6 +194,7 @@ type ControlButtonProps = {
     | 'video-off'
   label: string
   badgeCount?: number
+  lockBadge?: boolean
   onClick?: () => void
 }
 
@@ -182,6 +204,7 @@ function ControlButton({
   icon,
   label,
   badgeCount = 0,
+  lockBadge = false,
   onClick,
 }: ControlButtonProps) {
   return (
@@ -197,6 +220,11 @@ function ControlButton({
       {badgeCount > 0 && (
         <span className="control-button-badge">
           {Math.min(badgeCount, 99)}
+        </span>
+      )}
+      {lockBadge && (
+        <span className="control-button-lock-badge">
+          <Icon name="lock" size={9} strokeWidth={2.2} />
         </span>
       )}
     </button>

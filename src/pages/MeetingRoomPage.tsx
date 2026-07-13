@@ -10,6 +10,7 @@ import {
 import { Icon } from '../components/common/Icon'
 import { Logo } from '../components/common/Logo'
 import { ENABLE_MOCK_DATA } from '../constants/mockData'
+import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
 import {
   ConversationPanel,
   type ConversationTab,
@@ -27,7 +28,6 @@ import type {
   SpeechRecognitionLanguage,
   SupportedLanguage,
   Transcript,
-  TranslationSource,
 } from '../types/transcript'
 import type {
   LocalMediaState,
@@ -43,7 +43,6 @@ import {
   startSpeechRecognition,
   stopSpeechRecognition,
 } from '../services/speechService'
-import { translateText } from '../services/translationService'
 import { getPendingTranslationText, mockTranscripts } from '../fixtures/mockTranscripts'
 import {
   loadMeetingTranscripts,
@@ -83,6 +82,7 @@ import {
   getTranslationCacheKey,
   loadTranslations,
   saveTranslations,
+  shouldAutoTranslateText,
 } from '../services/translationRecordService'
 import {
   isScreenShareSupported,
@@ -202,7 +202,9 @@ export function MeetingRoomPage({
         ? targetLanguage
         : 'en',
     )
+  const [autoTranslationEnabled, setAutoTranslationEnabled] = useState(false)
   const [translatingKeys, setTranslatingKeys] = useState<string[]>([])
+  const [sttEnabled, setSttEnabled] = useState(false)
   const [
     isSpeechRecognitionActive,
     setIsSpeechRecognitionActive,
@@ -219,7 +221,9 @@ export function MeetingRoomPage({
     () => !window.matchMedia('(max-width: 900px)').matches,
   )
   const [conversationTab, setConversationTab] =
-    useState<ConversationTab>('transcript')
+    useState<ConversationTab>(
+      TRANSLATION_MODE_CONFIG.canUseTranscriptView ? 'transcript' : 'chat',
+    )
   const [viewMode, setViewMode] = useState<'grid' | 'focus'>('grid')
   const [selectedMainParticipantId, setSelectedMainParticipantId] = useState(
     () => (
@@ -303,11 +307,28 @@ export function MeetingRoomPage({
   const meetingSessionSnapshotRef = useRef('')
   const liveKitParticipantsSnapshotRef = useRef('')
   const lastNoSpeechMessageAtRef = useRef(0)
+  const speechRecognitionEnabledRef = useRef(false)
+  const pendingTranslationKeysRef = useRef(new Set<string>())
+  const translationQueueRef = useRef(Promise.resolve())
+  const translationsRef = useRef<TranslationRecord[]>([])
+  const translatingKeysRef = useRef<string[]>([])
+  const liveKitLocalParticipantRef = useRef<{
+    id: number
+    name: string
+    language: LanguageCode
+    meetingRole: 'host' | 'participant'
+  } | null>(null)
   const terminalPhaseRef =
     useRef<Extract<LiveKitConnectionPhase, 'kicked' | 'ended' | 'leaving'> | null>(null)
 
+  const setSpeechRecognitionEnabled = (enabled: boolean) => {
+    speechRecognitionEnabledRef.current = enabled
+    setSttEnabled(enabled)
+  }
+
   useEffect(() => {
     return () => {
+      speechRecognitionEnabledRef.current = false
       stopSpeechRecognition()
       stopScreenShare(screenShareStreamRef.current)
       if (copyMessageTimerRef.current !== null) {
@@ -337,7 +358,12 @@ export function MeetingRoomPage({
 
   useEffect(() => {
     saveTranslations(meetingId, translations)
+    translationsRef.current = translations
   }, [meetingId, translations])
+
+  useEffect(() => {
+    translatingKeysRef.current = translatingKeys
+  }, [translatingKeys])
 
   useEffect(() => {
     saveCaptionPreferences({ size: captionSize })
@@ -465,26 +491,6 @@ export function MeetingRoomPage({
     return newTranscript
   }
 
-  const updateTranscriptTranslation = (
-    transcriptId: number,
-    translatedText: string,
-    translationSource: TranslationSource,
-  ) => {
-    setTranscripts((previous) => previous.map((transcript) => (
-      transcript.id === transcriptId
-        ? {
-            ...transcript,
-            translatedText,
-            translationSource,
-            translatedTextByLanguage: {
-              ...transcript.translatedTextByLanguage,
-              [targetLanguage]: translatedText,
-            },
-          }
-        : transcript
-    )))
-  }
-
   const publishLiveKitTranscript = (transcript: Transcript) => {
     const transcriptKey = transcript.transcriptId ?? String(transcript.id)
     if (
@@ -526,6 +532,13 @@ export function MeetingRoomPage({
   ): boolean => {
     return startSpeechRecognition({
       language: speechRecognitionLanguage,
+      shouldRestart: () => (
+        speechRecognitionEnabledRef.current
+        && (
+          displayedLocalParticipant?.isMicOn
+          ?? localParticipant.isMicOn
+        )
+      ),
       onInterimResult: (interimText) => {
         showLiveCaptionText(interimText)
       },
@@ -537,33 +550,11 @@ export function MeetingRoomPage({
           return
         }
 
-        try {
-          const translation = await translateText({
-            text: sourceText,
-            sourceLanguage: getTranscriptSourceLanguage(),
-            targetLanguage,
-          })
-          updateTranscriptTranslation(
-            newTranscript.id,
-            translation.translatedText,
-            translation.source,
-          )
-          publishLiveKitTranscript({
-            ...newTranscript,
-            translatedText: translation.translatedText,
-            translationSource: translation.source,
-            translatedTextByLanguage: {
-              ...newTranscript.translatedTextByLanguage,
-              [targetLanguage]: translation.translatedText,
-            },
-          })
-        } catch {
-          publishLiveKitTranscript(newTranscript)
-          setSpeechMessage('번역 결과를 생성하지 못했습니다. 다시 시도해주세요.')
-        }
+        publishLiveKitTranscript(newTranscript)
       },
       onStart: () => {
         autoStartInProgressRef.current = false
+        setSpeechRecognitionEnabled(true)
         setIsSpeechRecognitionActive(true)
         setRoomParticipants(updateParticipantMediaState(
           localParticipant.id,
@@ -581,20 +572,33 @@ export function MeetingRoomPage({
       onError: (errorCode) => {
         const wasAutoStart = autoStartInProgressRef.current
         autoStartInProgressRef.current = false
-        setIsSpeechRecognitionActive(false)
         setRoomParticipants(updateParticipantMediaState(
           localParticipant.id,
           { isSpeaking: false },
         ))
         if (errorCode === 'aborted') {
+          setIsSpeechRecognitionActive(false)
           setSpeechMessage('')
           return
         }
+        if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+          setSpeechRecognitionEnabled(false)
+          setIsSpeechRecognitionActive(false)
+          setSpeechMessage('마이크 권한을 확인해 주세요.')
+          return
+        }
+        if (errorCode === 'network') {
+          setSpeechRecognitionEnabled(false)
+          setIsSpeechRecognitionActive(false)
+          setSpeechMessage('음성 인식 연결이 불안정합니다. 잠시 후 다시 시도해 주세요.')
+          return
+        }
         if (errorCode === 'no-speech') {
+          setIsSpeechRecognitionActive(false)
           const now = Date.now()
           if (now - lastNoSpeechMessageAtRef.current > 8000) {
             lastNoSpeechMessageAtRef.current = now
-            setSpeechMessage('음성이 감지되지 않았어요.')
+            setSpeechMessage('말하면 자동으로 자막이 기록됩니다.')
           }
           return
         }
@@ -605,6 +609,7 @@ export function MeetingRoomPage({
               ? '이 브라우저에서는 음성 인식을 지원하지 않습니다.'
               : `실시간 자막 오류: ${errorCode}`,
         )
+        setIsSpeechRecognitionActive(false)
       },
     })
   }
@@ -612,7 +617,9 @@ export function MeetingRoomPage({
   const handleToggleSpeechRecognition = () => {
     const isAutoStart = autoStartInProgressRef.current
     if (!isAutoStart) {
-      setConversationTab('transcript')
+      setConversationTab(
+        TRANSLATION_MODE_CONFIG.canUseTranscriptView ? 'transcript' : 'chat',
+      )
       setIsConversationOpen(true)
       setShowCaptionHint(false)
     }
@@ -624,7 +631,8 @@ export function MeetingRoomPage({
     const supported = isSpeechRecognitionSupported()
     setSpeechMessage('')
 
-    if (isSpeechRecognitionActive || getSpeechRecognitionStatus()) {
+    if (sttEnabled || isSpeechRecognitionActive || getSpeechRecognitionStatus()) {
+      setSpeechRecognitionEnabled(false)
       stopSpeechRecognition()
       setIsSpeechRecognitionActive(false)
       if (localParticipant) {
@@ -638,18 +646,21 @@ export function MeetingRoomPage({
 
     if (!localParticipant) {
       autoStartInProgressRef.current = false
+      setSpeechRecognitionEnabled(false)
       setSpeechMessage('로컬 참가자 정보를 찾을 수 없습니다.')
       return
     }
 
     if (!localParticipant?.isMicOn) {
       autoStartInProgressRef.current = false
+      setSpeechRecognitionEnabled(false)
       setSpeechMessage('마이크를 켜야 실시간 자막을 사용할 수 있어요.')
       return
     }
 
     if (!supported) {
       autoStartInProgressRef.current = false
+      setSpeechRecognitionEnabled(false)
       setSpeechMessage('이 브라우저에서는 음성 인식을 지원하지 않습니다.')
       return
     }
@@ -658,10 +669,12 @@ export function MeetingRoomPage({
       return
     }
 
+    setSpeechRecognitionEnabled(true)
     const started = startRecognitionForParticipant(localParticipant)
 
-    if (!started && isAutoStart) {
+    if (!started) {
       autoStartInProgressRef.current = false
+      setSpeechRecognitionEnabled(false)
       setSpeechMessage('실시간 자막을 시작하려면 자막 버튼을 눌러주세요.')
     }
   }
@@ -786,7 +799,8 @@ export function MeetingRoomPage({
       autoStartCaption,
     })
 
-    if (isSpeechRecognitionActive || getSpeechRecognitionStatus()) {
+    if (sttEnabled || isSpeechRecognitionActive || getSpeechRecognitionStatus()) {
+      setSpeechRecognitionEnabled(true)
       stopSpeechRecognition()
       setIsSpeechRecognitionActive(false)
       setRoomParticipants(updateParticipantMediaState(
@@ -817,7 +831,12 @@ export function MeetingRoomPage({
     kind: 'video' | 'audio',
     deviceId: string,
   ) => {
-    if (!localParticipant) {
+    if (
+      localParticipantId === undefined
+      || !localParticipantName
+      || !localParticipantLanguage
+      || !localParticipantMeetingRole
+    ) {
       return
     }
 
@@ -888,8 +907,9 @@ export function MeetingRoomPage({
         if (
           kind === 'audio'
           && !nextEnabled
-          && isSpeechRecognitionActive
+          && (sttEnabled || isSpeechRecognitionActive)
         ) {
+          setSpeechRecognitionEnabled(false)
           stopSpeechRecognition()
           setIsSpeechRecognitionActive(false)
         }
@@ -942,8 +962,9 @@ export function MeetingRoomPage({
     if (
       kind === 'audio'
       && !nextEnabled
-      && isSpeechRecognitionActive
+      && (sttEnabled || isSpeechRecognitionActive)
     ) {
+      setSpeechRecognitionEnabled(false)
       stopSpeechRecognition()
       setIsSpeechRecognitionActive(false)
     }
@@ -968,6 +989,30 @@ export function MeetingRoomPage({
   const localParticipant = roomParticipants.find(
     (participant) => participant.role === 'local',
   )
+  const localParticipantId = localParticipant?.id
+  const localParticipantName = localParticipant?.name
+  const localParticipantLanguage = localParticipant?.language
+  const localParticipantMeetingRole = localParticipant?.meetingRole
+
+  useEffect(() => {
+    liveKitLocalParticipantRef.current =
+      localParticipantId !== undefined
+      && localParticipantName
+      && localParticipantLanguage
+      && localParticipantMeetingRole
+        ? {
+            id: localParticipantId,
+            name: localParticipantName,
+            language: localParticipantLanguage,
+            meetingRole: localParticipantMeetingRole,
+          }
+        : null
+  }, [
+    localParticipantId,
+    localParticipantLanguage,
+    localParticipantMeetingRole,
+    localParticipantName,
+  ])
 
   const sendChatMessage = async (message: string) => {
     setChatSendMessage('')
@@ -1030,29 +1075,72 @@ export function MeetingRoomPage({
     }
   }
 
-  const translateConversationItem = async (
+  const getEffectiveTranslationTarget = useCallback((
+    sourceLanguage: LanguageCode,
+  ): LanguageCode => (
+    sourceLanguage === 'ko'
+      ? 'en'
+      : sourceLanguage === 'en'
+        ? 'ko'
+        : translationTargetLanguage
+  ), [translationTargetLanguage])
+
+  const waitForTranslationSlot = () => (
+    new Promise((resolve) => {
+      window.setTimeout(resolve, 380)
+    })
+  )
+
+  const translateConversationItem = useCallback(async (
     sourceType: TranslationSourceType,
     sourceId: string,
     sourceText: string,
     sourceLanguage: LanguageCode,
+    options: { force?: boolean, targetLanguage?: LanguageCode } = {},
   ) => {
-    const target =
-      sourceLanguage === 'ko'
-        ? 'en'
-        : sourceLanguage === 'en'
-          ? 'ko'
-          : translationTargetLanguage
-    const cacheKey = getTranslationCacheKey(sourceType, sourceId, target)
-
-    if (findTranslation(translations, sourceType, sourceId, target)) {
+    if (!TRANSLATION_MODE_CONFIG.canUseManualTranslation) {
+      setSettingsMessage('번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.')
       return
     }
+
+    const target = options.targetLanguage ?? getEffectiveTranslationTarget(sourceLanguage)
+    const cacheKey = getTranslationCacheKey(sourceType, sourceId, target)
+    const existingTranslation = findTranslation(
+      translationsRef.current,
+      sourceType,
+      sourceId,
+      target,
+    )
+
+    if (existingTranslation?.status === 'success') {
+      return
+    }
+    if (
+      existingTranslation
+      && existingTranslation.status !== 'skipped'
+      && !options.force
+    ) {
+      return
+    }
+    if (pendingTranslationKeysRef.current.has(cacheKey)) {
+      return
+    }
+
+    pendingTranslationKeysRef.current.add(cacheKey)
 
     setTranslatingKeys((current) => (
       current.includes(cacheKey) ? current : [...current, cacheKey]
     ))
 
-    try {
+    const runTranslation = async () => {
+      await waitForTranslationSlot()
+      console.debug('[translation-queue] processing', {
+        sourceType,
+        sourceId,
+        sourceLanguage,
+        targetLanguage: target,
+        sourceTextLength: sourceText.trim().length,
+      })
       const translation = await createManualTranslation({
         roomCode,
         sourceType,
@@ -1063,12 +1151,31 @@ export function MeetingRoomPage({
       })
 
       setTranslations((current) => {
-        if (findTranslation(current, sourceType, sourceId, target)) {
+        const existing = findTranslation(current, sourceType, sourceId, target)
+        if (existing?.status === 'success' && !options.force) {
           return current
         }
 
-        return dedupeTranslations([...current, translation])
+        return dedupeTranslations([
+          ...current.filter((item) => !(
+            item.sourceType === sourceType
+            && item.sourceId === sourceId
+            && item.targetLanguage === target
+          )),
+          translation,
+        ])
       })
+
+      if (
+        translation.status === 'success'
+        && sourceType === 'transcript'
+        && Date.now() - Date.parse(translation.createdAt) < 5000
+      ) {
+        showLiveCaptionText(
+          `${sourceText}\n${translation.translatedText}`,
+          4200,
+        )
+      }
 
       if (isLiveKitConnected) {
         await liveKitDataControllerRef.current
@@ -1080,15 +1187,112 @@ export function MeetingRoomPage({
             console.warn('[livekit-translation] Failed to publish translation', error)
           })
       }
-    } catch (error) {
-      console.warn('[translation] Failed to translate item', error)
-      setSettingsMessage('번역에 실패했습니다. 잠시 후 다시 시도해 주세요.')
-    } finally {
-      setTranslatingKeys((current) => (
-        current.filter((item) => item !== cacheKey)
-      ))
     }
-  }
+
+    translationQueueRef.current = translationQueueRef.current
+      .then(runTranslation, runTranslation)
+      .catch((error) => {
+        console.warn('[translation] Failed to translate item', {
+          sourceType,
+          sourceId,
+          sourceLanguage,
+          targetLanguage: target,
+          error,
+        })
+        setSettingsMessage('번역에 실패했습니다. 잠시 후 다시 시도해 주세요.')
+      })
+      .finally(() => {
+        pendingTranslationKeysRef.current.delete(cacheKey)
+        setTranslatingKeys((current) => (
+          current.filter((item) => item !== cacheKey)
+        ))
+      })
+
+    await translationQueueRef.current
+  }, [
+    getEffectiveTranslationTarget,
+    isLiveKitConnected,
+    roomCode,
+  ])
+
+  useEffect(() => {
+    if (!TRANSLATION_MODE_CONFIG.canUseAutoTranslation) {
+      return
+    }
+
+    if (!autoTranslationEnabled) {
+      return
+    }
+
+    chatMessages.forEach((message) => {
+      if (message.type !== 'user' || !message.message.trim()) {
+        return
+      }
+
+      const sourceLanguage: LanguageCode =
+        /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(message.message)
+          ? 'ko'
+          : /[A-Za-z]/.test(message.message)
+            ? 'en'
+            : message.language === 'ko'
+              || message.language === 'en'
+              ? message.language
+              : 'en'
+      const target = getEffectiveTranslationTarget(sourceLanguage)
+
+      if (
+        findTranslation(translations, 'chat', message.id, target)
+        || pendingTranslationKeysRef.current.has(getTranslationCacheKey('chat', message.id, target))
+        || translatingKeys.includes(getTranslationCacheKey('chat', message.id, target))
+      ) {
+        return
+      }
+
+      void translateConversationItem(
+        'chat',
+        message.id,
+        message.message,
+        sourceLanguage,
+        { targetLanguage: target },
+      )
+    })
+
+    transcripts.forEach((transcript, index) => {
+      const sourceId = transcript.transcriptId ?? String(transcript.id)
+      const target = getEffectiveTranslationTarget(transcript.sourceLanguage)
+      const previousTranscript = transcripts[index - 1]
+
+      if (
+        !transcript.sourceText.trim()
+        || !shouldAutoTranslateText(
+          transcript.sourceText,
+          transcript.sourceLanguage,
+          previousTranscript?.sourceText,
+        )
+        || findTranslation(translations, 'transcript', sourceId, target)
+        || pendingTranslationKeysRef.current.has(getTranslationCacheKey('transcript', sourceId, target))
+        || translatingKeys.includes(getTranslationCacheKey('transcript', sourceId, target))
+      ) {
+        return
+      }
+
+      void translateConversationItem(
+        'transcript',
+        sourceId,
+        transcript.sourceText,
+        transcript.sourceLanguage,
+        { targetLanguage: target },
+      )
+    })
+  }, [
+    autoTranslationEnabled,
+    chatMessages,
+    getEffectiveTranslationTarget,
+    transcripts,
+    translations,
+    translateConversationItem,
+    translatingKeys,
+  ])
 
   const connectLiveKitRoom = useCallback(async (options?: {
     force?: boolean
@@ -1097,7 +1301,9 @@ export function MeetingRoomPage({
       return
     }
 
-    if (!localParticipant) {
+    const participantForConnection = liveKitLocalParticipantRef.current
+
+    if (!participantForConnection) {
       return
     }
 
@@ -1148,10 +1354,10 @@ export function MeetingRoomPage({
     try {
       const connection = await requestLiveKitToken({
         roomName: roomNameForConnection,
-        participantName: localParticipant.name,
-        participantIdentity: `${meetingId}-${localParticipant.id}`,
-        language: localParticipant.language,
-        meetingRole: localParticipant.meetingRole,
+        participantName: participantForConnection.name,
+        participantIdentity: `${meetingId}-${participantForConnection.id}`,
+        language: participantForConnection.language,
+        meetingRole: participantForConnection.meetingRole,
       })
 
       if (liveKitConnectingRoomRef.current !== roomNameForConnection) {
@@ -1189,7 +1395,6 @@ export function MeetingRoomPage({
     isLiveKitConnected,
     liveKitConnection,
     liveKitStatus,
-    localParticipant,
     meetingId,
     roomCode,
   ])
@@ -1199,7 +1404,7 @@ export function MeetingRoomPage({
       return
     }
 
-    if (!localParticipant) {
+    if (localParticipantId === undefined) {
       return
     }
 
@@ -1219,7 +1424,7 @@ export function MeetingRoomPage({
   }, [
     connectLiveKitRoom,
     liveKitConnection?.roomName,
-    localParticipant,
+    localParticipantId,
     meetingId,
     roomCode,
   ])
@@ -1232,6 +1437,7 @@ export function MeetingRoomPage({
     const controller = liveKitMediaControllerRef.current
     terminalPhaseRef.current = 'kicked'
     meetingExitInProgressRef.current = true
+    setSpeechRecognitionEnabled(false)
     stopSpeechRecognition()
     setIsSpeechRecognitionActive(false)
     setWasRemovedFromMeeting(true)
@@ -1536,11 +1742,15 @@ export function MeetingRoomPage({
 
   const openConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
     setIsScreenShareExpanded(false)
-    setConversationTab(tab)
+    const nextTab =
+      !TRANSLATION_MODE_CONFIG.canUseTranscriptView && tab === 'transcript'
+        ? 'chat'
+        : tab
+    setConversationTab(nextTab)
     setIsParticipantsOpen(false)
     setIsSettingsOpen(false)
     setIsConversationOpen(true)
-    if (tab === 'chat') {
+    if (nextTab === 'chat') {
       setChatUnreadCount(0)
     }
   }, [])
@@ -1671,6 +1881,12 @@ export function MeetingRoomPage({
       participant.isCameraOn,
       participant.isMicOn,
       participant.isSpeaking,
+      participant.cameraTrackSid,
+      participant.cameraTrackId,
+      participant.microphoneTrackSid,
+      participant.microphoneTrackId,
+      participant.mediaStream?.getVideoTracks()[0]?.id,
+      participant.liveKitTrackVersion,
     ]))
 
     if (snapshot === liveKitParticipantsSnapshotRef.current) {
@@ -1752,6 +1968,7 @@ export function MeetingRoomPage({
       summaryStatus: 'ready',
     })
     saveEndedMeetingSessionToHistory(finalSession)
+    setSpeechRecognitionEnabled(false)
     stopSpeechRecognition()
     setIsSpeechRecognitionActive(false)
     endScreenShare()
@@ -2260,6 +2477,11 @@ export function MeetingRoomPage({
           }
           targetLanguage={targetLanguage}
           translationTargetLanguage={translationTargetLanguage}
+          autoTranslationEnabled={autoTranslationEnabled}
+          canUseManualTranslation={TRANSLATION_MODE_CONFIG.canUseManualTranslation}
+          canUseAutoTranslation={TRANSLATION_MODE_CONFIG.canUseAutoTranslation}
+          canUseTranscriptView={TRANSLATION_MODE_CONFIG.canUseTranscriptView}
+          translationMode={TRANSLATION_MODE_CONFIG.mode}
           translations={translations}
           translatingKeys={translatingKeys}
           isOpen={isConversationOpen}
@@ -2271,6 +2493,11 @@ export function MeetingRoomPage({
           canSendChatMessage={canSendChatMessage}
           chatSendMessage={chatSendMessage}
           onTranslationTargetLanguageChange={setTranslationTargetLanguage}
+          onAutoTranslationChange={(enabled) => {
+            setAutoTranslationEnabled(
+              TRANSLATION_MODE_CONFIG.canUseAutoTranslation && enabled,
+            )
+          }}
           onTranslateItem={translateConversationItem}
         />
       </div>
@@ -2527,7 +2754,7 @@ export function MeetingRoomPage({
       {!wasRemovedFromMeeting && (
         <ControlBar
           participant={displayedLocalParticipant ?? localParticipant}
-          isCaptionActive={isSpeechRecognitionActive}
+          isCaptionActive={sttEnabled}
           isScreenSharing={isLocalScreenSharing}
           isConversationOpen={isConversationOpen}
           isParticipantsOpen={isParticipantsOpen}
@@ -2537,16 +2764,25 @@ export function MeetingRoomPage({
           chatUnreadCount={chatUnreadCount}
           viewMode={isScreenShareLayoutActive ? 'grid' : viewMode}
           showCaptionHint={showCaptionHint}
-          captionMessage={speechMessage}
+          captionMessage={
+            speechMessage
+            || (sttEnabled && !isSpeechRecognitionActive
+              ? '실시간 자막 대기 중'
+              : '')
+          }
           liveCaptionText={liveCaptionText}
           screenShareMessage={screenShareMessage}
           captionButtonRef={captionButtonRef}
           chatButtonRef={controlBarChatButtonRef}
           participantsButtonRef={controlBarParticipantsButtonRef}
           settingsButtonRef={controlBarSettingsButtonRef}
+          showTranslationLockButton={TRANSLATION_MODE_CONFIG.isPremiumLocked}
           onToggleMicrophone={() => void toggleLocalMedia('audio')}
           onToggleCaption={handleToggleSpeechRecognition}
           onToggleCamera={() => void toggleLocalMedia('video')}
+          onLockedTranslationClick={() => {
+            setSpeechMessage('실시간 번역 기능은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.')
+          }}
           onToggleScreenShare={() => void toggleScreenShare()}
           onToggleViewMode={() => {
             if (!isScreenShareLayoutActive) {

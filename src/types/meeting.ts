@@ -99,4 +99,8 @@ export type Room = {
   title: string
   createdAt: string
   meetingRole: 'host' | 'participant'
+  participantIdentity?: string
+  hostControlToken?: string
+  expiresAt?: string
+  maxParticipants?: number
 }

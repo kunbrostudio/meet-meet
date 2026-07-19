@@ -95,6 +95,7 @@ import {
   saveCaptionPreferences,
 } from '../services/captionPreferencesService'
 import {
+  endFreeBetaRoom,
   removeLiveKitParticipant,
   requestLiveKitToken,
   type LiveKitConnectionDetails,
@@ -125,6 +126,7 @@ type MeetingRoomPageProps = {
   targetLanguage: LanguageCode
   autoStartCaption: boolean
   deviceSelection: MediaDeviceSelection
+  hostControlToken?: string
   onLocalMediaChange: (media: LocalMediaState) => void
   onDeviceSelectionChange: (selection: MediaDeviceSelection) => void
   onPreferencesChange: (preferences: MeetingPreferences) => void
@@ -151,6 +153,7 @@ export function MeetingRoomPage({
   targetLanguage,
   autoStartCaption,
   deviceSelection,
+  hostControlToken,
   onLocalMediaChange,
   onDeviceSelectionChange,
   onPreferencesChange,
@@ -1355,9 +1358,7 @@ export function MeetingRoomPage({
       const connection = await requestLiveKitToken({
         roomName: roomNameForConnection,
         participantName: participantForConnection.name,
-        participantIdentity: `${meetingId}-${participantForConnection.id}`,
         language: participantForConnection.language,
-        meetingRole: participantForConnection.meetingRole,
       })
 
       if (liveKitConnectingRoomRef.current !== roomNameForConnection) {
@@ -1536,6 +1537,7 @@ export function MeetingRoomPage({
           targetParticipantIdentity: removedParticipant.liveKitIdentity,
           requesterParticipantIdentity: currentHost.liveKitIdentity,
           requesterMeetingRole: currentHost.meetingRole,
+          hostControlToken,
         } as const
 
         await liveKitDataControllerRef.current
@@ -2028,6 +2030,20 @@ export function MeetingRoomPage({
         const { systemMessage, nextMessages } = appendSystemChatMessage(
           `${actor.name}님이 회의를 종료했습니다.`,
         )
+
+        if (
+          liveKitConnection
+          && actor.liveKitIdentity
+        ) {
+          await endFreeBetaRoom({
+            roomName: liveKitConnection.roomName,
+            requesterParticipantIdentity: actor.liveKitIdentity,
+            requesterMeetingRole: actor.meetingRole,
+            hostControlToken,
+          }).catch((error) => {
+            console.warn('[free-beta] Failed to verify host room end', error)
+          })
+        }
 
         if (dataController) {
           await dataController.publishChatMessage({

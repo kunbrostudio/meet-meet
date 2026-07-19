@@ -40,9 +40,19 @@ OPENAI_TRANSLATION_MODEL=gpt-5-mini
 TRANSLATION_SERVER_PORT=8787
 VITE_API_BASE_URL=
 VITE_ENABLE_MOCK_DATA=false
+VITE_TRANSLATION_MODE=free
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_livekit_api_key
 LIVEKIT_API_SECRET=your_livekit_api_secret
+FREE_BETA_MAX_ACTIVE_ROOMS=3
+FREE_BETA_MAX_PARTICIPANTS=4
+FREE_BETA_MAX_ACTIVE_ROOMS_PER_SESSION=1
+FREE_BETA_ROOM_DURATION_MINUTES=60
+FREE_BETA_CREATE_RATE_LIMIT=3
+FREE_BETA_CREATE_RATE_WINDOW_SECONDS=600
+FREE_BETA_JOIN_RATE_LIMIT=10
+FREE_BETA_JOIN_RATE_WINDOW_SECONDS=60
+FREE_BETA_MEETING_CREATION_ENABLED=true
 ```
 
 외부 회의 테스트에는 터미널 2개가 필요합니다.
@@ -73,6 +83,9 @@ Express 서버는 기본적으로 `http://localhost:8787`에서 실행됩니다.
 
 - `GET /api/health`
 - `POST /api/translate`
+- `POST /api/free-beta/rooms`
+- `POST /api/free-beta/rooms/join`
+- `POST /api/free-beta/rooms/end`
 - `POST /api/livekit/token`
 - `POST /api/livekit/remove-participant`
 

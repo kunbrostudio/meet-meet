@@ -73,10 +73,42 @@
   place-items: center;
   width: 36px;
   height: 36px;
+  box-sizing: border-box;
   border-radius: 12px;
   color: white;
   background: var(--blue);
   box-shadow: 0 7px 16px rgba(23, 105, 255, 0.25);
+}
+
+.brand-symbol {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 0;
+  border-radius: 12px;
+  background: white;
+  background-clip: padding-box;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.brand-symbol-inner {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.brand-symbol img,
+.figma-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .button {

@@ -5,9 +5,7 @@ export type LiveKitMeetingRole = 'host' | 'participant'
 export type LiveKitTokenRequest = {
   roomName: string
   participantName: string
-  participantIdentity: string
   language?: string
-  meetingRole?: LiveKitMeetingRole
 }
 
 export type LiveKitConnectionDetails = {
@@ -22,6 +20,7 @@ export type LiveKitRemoveParticipantRequest = {
   targetParticipantIdentity: string
   requesterParticipantIdentity: string
   requesterMeetingRole: LiveKitMeetingRole
+  hostControlToken?: string
 }
 
 export type LiveKitRemoveParticipantResponse = {
@@ -30,6 +29,13 @@ export type LiveKitRemoveParticipantResponse = {
   message?: string
   roomName: string
   removedParticipantIdentity: string
+}
+
+export type LiveKitEndRoomRequest = {
+  roomName: string
+  requesterParticipantIdentity: string
+  requesterMeetingRole: LiveKitMeetingRole
+  hostControlToken?: string
 }
 
 export type LiveKitMediaController = {
@@ -75,6 +81,7 @@ export async function requestLiveKitToken(
 ): Promise<LiveKitConnectionDetails> {
   const response = await fetch(apiUrl('/api/livekit/token'), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -112,6 +119,7 @@ export async function removeLiveKitParticipant(
 ): Promise<LiveKitRemoveParticipantResponse> {
   const response = await fetch(apiUrl('/api/livekit/remove-participant'), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -145,4 +153,29 @@ export async function removeLiveKitParticipant(
   }
 
   return details as LiveKitRemoveParticipantResponse
+}
+
+export async function endFreeBetaRoom(
+  request: LiveKitEndRoomRequest,
+): Promise<void> {
+  const response = await fetch(apiUrl('/api/free-beta/rooms/end'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  if (!response.ok) {
+    const details = await response.json().catch(
+      () => ({} as LiveKitErrorResponse),
+    ) as LiveKitErrorResponse
+    throw new Error(
+      details.message
+      ?? details.reason
+      ?? details.error
+      ?? `Free beta room end request failed with status ${response.status}.`,
+    )
+  }
 }

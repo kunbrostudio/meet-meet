@@ -1,7 +1,8 @@
 import { STORAGE_KEYS } from '../constants/storageKeys'
 import type { Room } from '../types'
+import { apiUrl } from './apiClient'
 
-const ROOM_CODE_PATTERN = /^MER-[A-Z0-9]{4}$/
+const ROOM_CODE_PATTERN = /^MER-[A-Z0-9]{6}$/
 const ROOM_CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 function generateMeetingId(): string {
@@ -103,6 +104,102 @@ export function joinRoomByCode(roomCode: string): Room | null {
     meetingRole: 'participant',
   }
 
+  saveCurrentRoom(room)
+  return room
+}
+
+type FreeBetaRoomResponse = {
+  ok?: boolean
+  room?: {
+    meetingId: string
+    roomCode: string
+    title: string
+    createdAt: string
+    meetingRole: 'host' | 'participant'
+    participantIdentity?: string
+    hostControlToken?: string
+    expiresAt?: string
+    maxParticipants?: number
+  }
+  error?: {
+    code?: string
+    message?: string
+  }
+  message?: string
+  reason?: string
+}
+
+function getFreeBetaErrorMessage(
+  response: FreeBetaRoomResponse,
+  fallback: string,
+): string {
+  return response.error?.message
+    ?? response.message
+    ?? response.reason
+    ?? fallback
+}
+
+export async function createServerRoom(input: {
+  participantName: string
+  language: string
+  title?: string
+}): Promise<Room> {
+  const response = await fetch(apiUrl('/api/free-beta/rooms'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  })
+  const details = await response.json().catch(
+    () => ({} as FreeBetaRoomResponse),
+  ) as FreeBetaRoomResponse
+
+  if (!response.ok || !details.room) {
+    throw new Error(
+      getFreeBetaErrorMessage(details, '회의실을 생성하지 못했습니다.'),
+    )
+  }
+
+  const room = details.room
+  saveCurrentRoom(room)
+  return room
+}
+
+export async function joinServerRoomByCode(input: {
+  roomCode: string
+  participantName: string
+  language: string
+}): Promise<Room> {
+  const normalizedCode = input.roomCode.trim().toUpperCase()
+
+  if (!ROOM_CODE_PATTERN.test(normalizedCode)) {
+    throw new Error('올바른 방 코드 형식이 아닙니다.')
+  }
+
+  const response = await fetch(apiUrl('/api/free-beta/rooms/join'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...input,
+      roomCode: normalizedCode,
+    }),
+  })
+  const details = await response.json().catch(
+    () => ({} as FreeBetaRoomResponse),
+  ) as FreeBetaRoomResponse
+
+  if (!response.ok || !details.room) {
+    throw new Error(
+      getFreeBetaErrorMessage(details, '회의실에 입장하지 못했습니다.'),
+    )
+  }
+
+  const room = details.room
   saveCurrentRoom(room)
   return room
 }

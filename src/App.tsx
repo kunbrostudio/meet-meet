@@ -16,7 +16,9 @@ import type {
 import { stopMediaStream } from './services/deviceService'
 import {
   createRoom,
+  createServerRoom,
   joinRoomByCode,
+  joinServerRoomByCode,
   loadCurrentRoom,
   saveCurrentRoom,
 } from './services/roomService'
@@ -87,6 +89,10 @@ function getInitialMeetingState() {
           meta?.meetingRole
           ?? storedRoom?.meetingRole
           ?? 'host',
+        participantIdentity: storedRoom?.participantIdentity,
+        hostControlToken: storedRoom?.hostControlToken,
+        expiresAt: storedRoom?.expiresAt,
+        maxParticipants: storedRoom?.maxParticipants,
       }
     : createRoom()
 
@@ -173,17 +179,48 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const beginNewRoom = () => {
-    const room = createRoom()
-    setCurrentRoom(room)
-    setMeetingCreatedAt(room.createdAt)
-    setRoomName(room.title)
-    saveActiveMeetingId(room.meetingId)
-    navigate('setup')
+  const beginNewRoom = async () => {
+    try {
+      const room = await createServerRoom({
+        participantName: preferences.displayName,
+        language: preferences.sourceLanguage,
+        title: 'Weekly Product Sync',
+      })
+      setCurrentRoom(room)
+      setMeetingCreatedAt(room.createdAt)
+      setRoomName(room.title)
+      saveActiveMeetingId(room.meetingId)
+      navigate('setup')
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : '회의실을 생성하지 못했습니다.'
+      window.alert(message)
+    }
   }
 
-  const joinWithCode = (code: string): string | null => {
-    const room = joinRoomByCode(code)
+  const joinWithCode = async (code: string): Promise<string | null> => {
+    let room: Room
+
+    try {
+      room = await joinServerRoomByCode({
+        roomCode: code,
+        participantName: preferences.displayName,
+        language: preferences.sourceLanguage,
+      })
+    } catch (error) {
+      const fallbackRoom = joinRoomByCode(code)
+
+      if (!fallbackRoom) {
+        return error instanceof Error
+          ? error.message
+          : '올바른 방 코드 형식이 아닙니다.'
+      }
+
+      return error instanceof Error
+        ? error.message
+        : '회의실에 입장하지 못했습니다.'
+    }
 
     if (!room) {
       return '올바른 방 코드 형식이 아닙니다.'
@@ -237,6 +274,7 @@ function App() {
       joinedAt: meetingCreatedAt,
       isCameraOn: localMedia.cameraEnabled,
       isMicOn: localMedia.microphoneEnabled,
+      liveKitIdentity: currentRoom.participantIdentity,
     },
     ...(
       ENABLE_MOCK_DATA
@@ -411,6 +449,7 @@ function App() {
             targetLanguage={preferences.targetLanguage}
             autoStartCaption={preferences.autoStartCaption}
             deviceSelection={deviceSelection}
+            hostControlToken={currentRoom.hostControlToken}
             onLocalMediaChange={updateLocalMedia}
             onDeviceSelectionChange={setDeviceSelection}
             onPreferencesChange={updateMeetingPreferences}

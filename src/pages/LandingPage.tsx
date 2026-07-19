@@ -6,15 +6,15 @@ import { Icon } from '../components/common/Icon'
 import { parseRoomCodeFromUrl } from '../services/roomService'
 
 type LandingPageProps = {
-  onStart: () => void
-  onJoin: (code: string) => string | null
+  onStart: () => void | Promise<void>
+  onJoin: (code: string) => string | null | Promise<string | null>
 }
 
 export function LandingPage({ onStart, onJoin }: LandingPageProps) {
   const [code, setCode] = useState(() => parseRoomCodeFromUrl() ?? '')
   const [codeError, setCodeError] = useState('')
 
-  const joinMeeting = (event: FormEvent<HTMLFormElement>) => {
+  const joinMeeting = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     if (!code.trim()) {
@@ -22,7 +22,7 @@ export function LandingPage({ onStart, onJoin }: LandingPageProps) {
       return
     }
 
-    const error = onJoin(code)
+    const error = await onJoin(code)
     setCodeError(error ?? '')
   }
 
@@ -32,7 +32,7 @@ export function LandingPage({ onStart, onJoin }: LandingPageProps) {
         <article className="figma-card figma-intro-card">
           <div className="figma-brand">
             <span className="figma-brand-mark">
-              <Icon name="wave" size={22} strokeWidth={2.1} />
+              <img src="/images/say-merang-symbol.png" alt="Say, Merang" />
             </span>
             <span>Say, Merang</span>
           </div>

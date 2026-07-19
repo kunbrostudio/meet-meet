@@ -198,7 +198,7 @@ export function createMeetingExportFilename(date = new Date()): string {
   }
 
   return [
-    'say-merang-meeting',
+    'meet-meet-room',
     `${parts.year}-${parts.month}-${parts.day}`,
     `${parts.hour}-${parts.minute}.md`,
   ].join('-')

@@ -1,28 +1,39 @@
-# Say, Merang
+# MEET MEET
 
-실시간 회의 통역, 자막 기록, 채팅, 화면 공유, 회의 요약을 제공하는 화상회의 MVP입니다.
+밋밋 / MEET MEET은 친구들과 만나서 바로 노는 실시간 화상 놀이터입니다.
 
-현재 버전은 LiveKit 기반 1:1/소규모 회의 연결을 지원하며, 회의 기록은 브라우저 `localStorage`에 저장됩니다. 실제 번역 API는 비용/쿼터 관리를 위해 기본 비활성화되어 있고, 앱은 로컬 번역 fallback으로 계속 동작합니다.
+임시 메인 카피: 별거 없는 게임, 별일 다 생기는 방
 
-## 주요 기능
+현재 단계는 기존 안정 버전에서 분리한 MEET MEET 개발용 기본 프로젝트입니다. LiveKit 기반 화상방, 방 생성/코드 입장, 카메라/마이크 제어, 텍스트 채팅, 호스트 권한 처리를 유지하고, 번역/STT/자막/Transcript/요약/회의 기록 UI는 초기 사용자 흐름에서 제외했습니다.
 
-- 방 생성, roomCode 입장, 방 코드/초대 링크 복사
+## 현재 유지 기능
+
+- 방 만들기, 코드 입장, 초대 링크 복사
 - LiveKit 자동 연결
-- 카메라·마이크 장치 선택 및 on/off 제어
-- 참가자 비디오 그리드, focus mode, 모바일 portrait/landscape 레이아웃
-- LiveKit 화면 공유 publish/subscribe
-- 화면 공유 fullscreen 몰입 모드
-- 브라우저 SpeechRecognition 기반 실시간 자막
-- LiveKit data packet 기반 채팅 동기화
-- LiveKit data packet 기반 transcript 동기화
-- Conversation 패널, 모바일 bottom sheet, landscape compact panel
-- Chat unread badge
-- 방장 참가자 내보내기
-- 참가자 나가기 / 방장 회의 종료
-- 회의 SummaryPage 이동
-- HistoryPage 저장/복원
-- Markdown 회의록 내보내기
-- localStorage 기반 meeting session persistence
+- 카메라/마이크 장치 선택 및 on/off 제어
+- 스피커 장치 선택 구조
+- 참가자 비디오 그리드와 focus mode
+- 텍스트 채팅 동기화
+- 참가자 목록
+- 호스트 참가자 내보내기
+- 호스트 방 종료
+- 참가자 나가기
+- 화면 공유 기능
+
+## 초기 범위에서 제외한 기능
+
+- 번역
+- STT
+- 실시간 자막
+- Transcript
+- 언어 선택
+- 수동/자동 번역
+- 회의 요약
+- 회의 기록
+- 기록 내보내기
+- 자막/번역 설정
+
+관련 서비스 파일과 타입은 아직 남아 있지만 초기 화면과 라우팅에서는 접근하지 않습니다.
 
 ## 로컬 실행 방법
 
@@ -41,6 +52,7 @@ TRANSLATION_SERVER_PORT=8787
 VITE_API_BASE_URL=
 VITE_ENABLE_MOCK_DATA=false
 VITE_TRANSLATION_MODE=free
+VITE_USE_REAL_TRANSLATION_API=true
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=your_livekit_api_key
 LIVEKIT_API_SECRET=your_livekit_api_secret
@@ -55,15 +67,11 @@ FREE_BETA_JOIN_RATE_WINDOW_SECONDS=60
 FREE_BETA_MEETING_CREATION_ENABLED=true
 ```
 
-외부 회의 테스트에는 터미널 2개가 필요합니다.
-
-Terminal 1 — API 서버:
+외부 화상방 테스트에는 터미널 2개가 필요합니다.
 
 ```bash
 npm run server
 ```
-
-Terminal 2 — Vite 개발 서버:
 
 ```bash
 npm run dev
@@ -82,57 +90,23 @@ Express 서버는 기본적으로 `http://localhost:8787`에서 실행됩니다.
 주요 endpoint:
 
 - `GET /api/health`
-- `POST /api/translate`
 - `POST /api/free-beta/rooms`
 - `POST /api/free-beta/rooms/join`
 - `POST /api/free-beta/rooms/end`
 - `POST /api/livekit/token`
 - `POST /api/livekit/remove-participant`
 
-상태 확인:
-
-```bash
-curl http://localhost:8787/api/health
-```
-
-`/api/health`는 다음 정보를 반환합니다.
-
-- `openaiConfigured`
-- `livekitConfigured`
-- `model`
-- `serverTime`
+아직 남아 있는 `/api/translate`는 초기 MEET MEET 화면에서 사용하지 않습니다.
 
 `LIVEKIT_API_SECRET`과 `OPENAI_API_KEY`는 서버에서만 사용해야 하며 프론트엔드 환경 변수로 노출하면 안 됩니다.
 
 프론트엔드가 별도 배포된 API 서버를 사용해야 하는 경우 `VITE_API_BASE_URL`을 설정합니다.
 
 ```bash
-VITE_API_BASE_URL=https://say-merang-api.onrender.com
+VITE_API_BASE_URL=https://meet-meet-api.example.com
 ```
 
-로컬 개발에서 값을 비워두면 기존처럼 `/api/...` 상대경로를 사용하고, Vite proxy를 통해 로컬 Express 서버로 전달됩니다.
-
-샘플 참가자/샘플 transcript 데이터는 기본적으로 꺼져 있습니다. 개발 중 fixture 데이터를 확인해야 할 때만 `.env`에서 다음 값을 켭니다.
-
-```bash
-VITE_ENABLE_MOCK_DATA=true
-```
-
-이 플래그는 개발 모드에서만 적용됩니다.
-
-## 번역 상태
-
-번역 UI는 `VITE_TRANSLATION_MODE`로 제어합니다.
-
-- `dev`: 개발 중 수동/자동 번역 UI를 테스트할 수 있습니다.
-- `free`: 무료 MVP 모드입니다. 번역 버튼은 숨기고 프리미엄 준비 중 안내를 보여줍니다.
-- `premium`: 수동/자동 번역 UI를 활성화할 수 있는 구조입니다.
-
-값을 지정하지 않으면 개발 서버에서는 `dev`, 배포 빌드에서는 `free`로 동작합니다.
-
-실제 번역 API 호출은 별도로 `VITE_USE_REAL_TRANSLATION_API`로 제어합니다. 기본값은 실제 API 사용이며, 디버그나 비용 제어가 필요하면 `.env`에 `VITE_USE_REAL_TRANSLATION_API=false`를 지정해 로컬 fallback 번역만 사용할 수 있습니다.
-
-나중에 실제 번역 API를 켜더라도 OpenAI API 쿼터/결제/네트워크 오류가 발생하면 앱은 fallback 번역으로 계속 동작해야 합니다.
+로컬 개발에서 값을 비워두면 `/api/...` 상대경로를 사용하고, Vite proxy를 통해 로컬 Express 서버로 전달됩니다.
 
 ## 검사
 
@@ -146,44 +120,29 @@ npm run lint
 ## 외부 테스트 체크리스트
 
 - 일반 창에서 방 생성
-- 시크릿 창 또는 다른 브라우저에서 roomCode로 입장
+- 시크릿 창 또는 다른 브라우저에서 `MMT-XXXXXX` 코드로 입장
 - 카메라/마이크 권한 허용 및 거부 안내 확인
 - 카메라/마이크 on/off 확인
 - 채팅 송수신 확인
-- 실시간 자막 생성 및 동기화 확인
-- 화면 공유 시작/중지 확인
-- 화면 공유 fullscreen 진입/종료 확인
 - 참가자 내보내기 확인
 - 참가자 나가기 확인
-- 방장 회의 종료 확인
-- Summary / History / Markdown export 확인
+- 방장 방 종료 확인
 - 모바일 portrait / landscape 레이아웃 확인
 
 ## 배포 전 주의사항
 
 프론트엔드만 Netlify 같은 정적 호스팅에 배포하면 UI는 보일 수 있지만, 다음 API는 동작하지 않습니다.
 
-- `/api/translate`
 - `/api/livekit/token`
 - `/api/livekit/remove-participant`
 
-외부 테스트를 하려면 Express 서버를 별도로 배포하거나 serverless/function 환경으로 옮겨야 합니다. 선택지는 예를 들면 다음과 같습니다.
+외부 테스트를 하려면 Express 서버를 별도로 배포하거나 serverless/function 환경으로 옮겨야 합니다.
 
-- Render
-- Railway
-- Fly.io
-- Vercel Serverless Functions
-- Netlify Functions
-
-이번 MVP에서는 배포 설정을 자동으로 변경하지 않습니다. 실제 배포 시에는 프론트엔드의 `/api` 요청이 배포된 API 서버 또는 functions endpoint로 연결되도록 설정해야 합니다.
-
-Netlify 프론트엔드와 Render API 서버를 함께 사용할 때는 Netlify 환경변수에 다음 값을 추가합니다.
+Netlify 프론트엔드와 별도 API 서버를 함께 사용할 때는 Netlify 환경변수에 API 서버 주소를 추가합니다.
 
 ```bash
-VITE_API_BASE_URL=https://say-merang-api.onrender.com
+VITE_API_BASE_URL=https://meet-meet-api.example.com
 ```
-
-이 값이 있어야 브라우저 요청이 `https://say-merang.netlify.app/api/...`가 아니라 `https://say-merang-api.onrender.com/api/...`로 전송됩니다.
 
 ## 프로젝트 구조
 
@@ -191,6 +150,7 @@ VITE_API_BASE_URL=https://say-merang-api.onrender.com
 src/
 ├── components/
 │   ├── common/
+│   ├── livekit/
 │   └── meeting/
 ├── constants/
 ├── fixtures/
@@ -199,14 +159,15 @@ src/
 └── types/
 ```
 
-- `types`: Participant, Transcript, ChatMessage, MeetingMeta, Room 등 공통 모델
-- `services`: LiveKit, 미디어, 자막, 번역, 저장, 화면 공유 등 데이터/브라우저 로직
-- `fixtures`: API 없이 앱을 계속 사용할 수 있게 하는 샘플 데이터
-- `components/meeting`: 미팅룸 카드, 패널, 컨트롤, 모달 UI
-- `pages`: 랜딩, 설정, 미팅룸, 요약, 기록 페이지
+- `types`: Participant, ChatMessage, MeetingMeta, Room 등 공통 모델
+- `services`: LiveKit, 미디어, 채팅, 저장, 화면 공유 등 데이터/브라우저 로직
+- `components/meeting`: 화상방 카드, 패널, 컨트롤, 모달 UI
+- `pages`: 랜딩, 설정, 화상방 페이지
 
-## 아직 연결하지 않은 것
+## 다음 개발 방향
 
-- Supabase 로그인 및 서버 저장
-- 실제 운영 인증/권한 시스템
-- 기본 활성화된 외부 번역 API
+- LiveKit 공통 브리지 추출
+- `src/types/game.ts`와 게임 상태 manager 추가
+- 게임 상태 LiveKit topic 추가
+- 중앙 GameBoard와 게임 채팅 패널 추가
+- 웃참 공격전 MVP 구현

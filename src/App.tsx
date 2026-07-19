@@ -3,9 +3,7 @@ import './App.css'
 import { AppHeader } from './components/common/AppHeader'
 import { ENABLE_MOCK_DATA } from './constants/mockData'
 import { LandingPage } from './pages/LandingPage'
-import { MeetingHistoryPage } from './pages/MeetingHistoryPage'
 import { MeetingRoomPage } from './pages/MeetingRoomPage'
-import { MeetingSummaryPage } from './pages/MeetingSummaryPage'
 import { SetupPage } from './pages/SetupPage'
 import type {
   LocalMediaState,
@@ -20,49 +18,34 @@ import {
   joinRoomByCode,
   joinServerRoomByCode,
   loadCurrentRoom,
-  saveCurrentRoom,
 } from './services/roomService'
 import {
   clearActiveMeetingId,
-  clearMeetingMeta,
-  clearMeetingTranscripts,
-  deleteMeetingHistoryItem,
   loadActiveMeetingId,
   loadMeetingMeta,
-  loadMeetingTranscripts,
   saveActiveMeetingId,
-  saveMeetingHistoryItem,
   saveMeetingMeta,
 } from './services/transcriptStorageService'
 import {
   createLocalParticipant,
   createMockRemoteParticipants,
 } from './services/participantService'
-import { clearChatMessages } from './services/chatService'
-import {
-  clearMeetingSession,
-  loadMeetingSession,
-  saveEndedMeetingSessionToHistory,
-} from './services/meetingSessionStorageService'
 import { cleanupExpiredAndOversizedRecords } from './services/localFirstStoragePolicyService'
-import { clearTranslations } from './services/translationRecordService'
 
-export type Page = 'landing' | 'setup' | 'meeting' | 'summary' | 'history'
+export type Page = 'landing' | 'setup' | 'meeting'
 
 const pagePaths: Record<Page, string> = {
   landing: '/',
   setup: '/setup',
   meeting: '/meeting',
-  summary: '/summary',
-  history: '/history',
 }
 
 const defaultPreferences: MeetingPreferences = {
   displayName: 'Ken Choi',
   sourceLanguage: 'ko',
   targetLanguage: 'ko',
-  participantCount: 4,
-  autoStartCaption: true,
+  participantCount: 2,
+  autoStartCaption: false,
 }
 
 function getPageFromPath(): Page {
@@ -71,9 +54,7 @@ function getPageFromPath(): Page {
 }
 
 function getInitialMeetingState() {
-  const summaryMeetingId =
-    new URLSearchParams(window.location.search).get('meetingId')
-  const storedMeetingId = summaryMeetingId ?? loadActiveMeetingId()
+  const storedMeetingId = loadActiveMeetingId()
   const storedRoom = loadCurrentRoom()
   const meetingId = storedMeetingId ?? storedRoom?.meetingId
   const meta = meetingId ? loadMeetingMeta(meetingId) : null
@@ -82,8 +63,8 @@ function getInitialMeetingState() {
         meetingId,
         roomCode:
           meta?.roomCode
-          ?? (storedRoom?.meetingId === meetingId ? storedRoom.roomCode : 'MER-LOCAL'),
-        title: meta?.roomName ?? storedRoom?.title ?? 'Weekly Product Sync',
+          ?? (storedRoom?.meetingId === meetingId ? storedRoom.roomCode : 'MMT-LOCAL'),
+        title: meta?.roomName ?? storedRoom?.title ?? 'MEET MEET Room',
         createdAt: meta?.createdAt ?? storedRoom?.createdAt ?? new Date().toISOString(),
         meetingRole:
           meta?.meetingRole
@@ -134,6 +115,7 @@ function App() {
   const [deviceSelection, setDeviceSelection] = useState<MediaDeviceSelection>({
     videoDeviceId: '',
     audioDeviceId: '',
+    speakerDeviceId: '',
   })
 
   const clearLocalMedia = () => {
@@ -168,23 +150,12 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const navigateToSummary = (summaryMeetingId: string) => {
-    clearLocalMedia()
-    window.history.pushState(
-      {},
-      '',
-      `${pagePaths.summary}?meetingId=${encodeURIComponent(summaryMeetingId)}`,
-    )
-    setPage('summary')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-
   const beginNewRoom = async () => {
     try {
       const room = await createServerRoom({
         participantName: preferences.displayName,
         language: preferences.sourceLanguage,
-        title: 'Weekly Product Sync',
+        title: 'MEET MEET Room',
       })
       setCurrentRoom(room)
       setMeetingCreatedAt(room.createdAt)
@@ -194,7 +165,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error
         ? error.message
-        : '회의실을 생성하지 못했습니다.'
+        : '방을 생성하지 못했습니다.'
       window.alert(message)
     }
   }
@@ -219,7 +190,7 @@ function App() {
 
       return error instanceof Error
         ? error.message
-        : '회의실에 입장하지 못했습니다.'
+        : '방에 입장하지 못했습니다.'
     }
 
     if (!room) {
@@ -309,110 +280,23 @@ function App() {
   }
 
   const endMeeting = () => {
-    const endedAt = new Date().toISOString()
-    const meetingSession = loadMeetingSession(meetingId)
-    const transcripts =
-      meetingSession?.transcripts ?? loadMeetingTranscripts(meetingId)
-    const currentParticipantCount =
-      meetingSession?.participants.length
-      || participants.length
-      || preferences.participantCount
-    const usedLanguages = [...new Set(
-      transcripts.flatMap((transcript) => [
-        transcript.sourceLanguage,
-        transcript.targetLanguage,
-      ]),
-    )]
-
-    const meetingMeta = {
+    saveMeetingMeta({
       meetingId,
       roomCode,
       roomName,
       meetingRole: currentRoom.meetingRole,
-      participantCount: currentParticipantCount,
+      participantCount: participants.length || preferences.participantCount,
       createdAt: meetingCreatedAt,
-      updatedAt: endedAt,
+      updatedAt: new Date().toISOString(),
       preferences,
-    }
-    const historyItem = {
-      meetingId,
-      roomCode,
-      title: meetingSession?.title ?? roomName,
-      createdAt: meetingSession?.createdAt ?? meetingCreatedAt,
-      endedAt: meetingSession?.endedAt ?? endedAt,
-      participantCount: currentParticipantCount,
-      transcriptCount: transcripts.length,
-      usedLanguages,
-    }
-
-    saveMeetingMeta(meetingMeta)
-    if (meetingSession) {
-      saveEndedMeetingSessionToHistory({
-        ...meetingSession,
-        endedAt: meetingSession.endedAt ?? endedAt,
-      }, meetingMeta)
-    } else {
-      saveMeetingHistoryItem(historyItem)
-    }
-    navigateToSummary(meetingId)
-  }
-
-  const startNewMeeting = () => {
-    beginNewRoom()
-  }
-
-  const deleteMeetingRecord = () => {
-    clearMeetingTranscripts(meetingId)
-    clearChatMessages(meetingId)
-    clearTranslations(meetingId)
-    clearMeetingSession(meetingId)
-    clearMeetingMeta(meetingId)
-    deleteMeetingHistoryItem(meetingId)
+    })
     clearActiveMeetingId()
-  }
-
-  const openMeetingHistoryItem = (historyMeetingId: string) => {
-    const meta = loadMeetingMeta(historyMeetingId)
-
-    saveActiveMeetingId(historyMeetingId)
-
-    if (meta) {
-      const room: Room = {
-        meetingId: historyMeetingId,
-        roomCode: meta.roomCode ?? 'MER-LOCAL',
-        title: meta.roomName,
-        createdAt: meta.createdAt,
-        meetingRole: meta.meetingRole ?? 'host',
-      }
-      setCurrentRoom(room)
-      saveCurrentRoom(room)
-      setMeetingCreatedAt(meta.createdAt)
-      setRoomName(meta.roomName)
-      setPreferences({
-        ...defaultPreferences,
-        ...meta.preferences,
-        participantCount:
-          meta.participantCount
-          ?? meta.preferences?.participantCount
-          ?? defaultPreferences.participantCount,
-      })
-    }
-
-    navigateToSummary(historyMeetingId)
-  }
-
-  const goBackFromHistory = () => {
-    if (window.history.length > 1) {
-      window.history.back()
-      return
-    }
-
-    navigateToSummary(meetingId)
+    navigate('landing')
   }
 
   return (
     <div className="app-shell">
-      {(page === 'setup' || page === 'summary' || page === 'history') && (
+      {page === 'setup' && (
         <AppHeader
           onLogoClick={() => navigate('landing')}
         />
@@ -456,26 +340,6 @@ function App() {
             onReconnectMedia={() => navigate('setup')}
             onReturnHome={() => navigate('landing')}
             onLeave={endMeeting}
-          />
-        )}
-        {page === 'summary' && (
-          <MeetingSummaryPage
-            meetingId={meetingId}
-            roomCode={roomCode}
-            roomName={roomName}
-            participants={participants}
-            targetLanguage={preferences.targetLanguage}
-            onHome={() => navigate('landing')}
-            onNewMeeting={startNewMeeting}
-            onDeleteRecord={deleteMeetingRecord}
-            onViewHistory={() => navigate('history')}
-          />
-        )}
-        {page === 'history' && (
-          <MeetingHistoryPage
-            onBack={goBackFromHistory}
-            onHome={() => navigate('landing')}
-            onOpenMeeting={openMeetingHistoryItem}
           />
         )}
       </main>

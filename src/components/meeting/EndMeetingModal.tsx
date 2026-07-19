@@ -13,10 +13,10 @@ type EndMeetingModalProps = {
 
 export function EndMeetingModal({
   isSaving,
-  title = '미팅을 종료할까요?',
-  description = '종료하면 현재까지의 자막 기록과 채팅 기록이 저장되고 요약 화면으로 이동합니다.',
+  title = '방을 종료할까요?',
+  description = '종료하면 모든 참가자가 방에서 나가고 홈으로 이동합니다.',
   cancelLabel = '계속하기',
-  confirmLabel = '미팅 종료',
+  confirmLabel = '방 종료',
   savingLabel = '저장 중...',
   onContinue,
   onConfirm,

@@ -37,7 +37,7 @@ export function RemoveParticipantModal({
         </span>
         <h2 id="remove-participant-title">참가자를 내보낼까요?</h2>
         <p>
-          선택한 참가자는 현재 미팅에서 퇴장됩니다.
+          선택한 참가자는 현재 방에서 퇴장됩니다.
           <strong>{participant.name}</strong>
         </p>
         {message && (

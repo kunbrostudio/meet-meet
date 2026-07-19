@@ -7,10 +7,10 @@ import type {
 } from '../types/transcript'
 import type { TranslationRecord } from '../types/translation'
 
-export const LIVEKIT_CHAT_TOPIC = 'say-merang-chat'
-export const LIVEKIT_TRANSCRIPT_TOPIC = 'say-merang-transcript'
-export const LIVEKIT_TRANSLATION_TOPIC = 'say-merang-translation'
-export const LIVEKIT_MEETING_CONTROL_TOPIC = 'say-merang-meeting-control'
+export const LIVEKIT_CHAT_TOPIC = 'meet-meet-chat'
+export const LIVEKIT_TRANSCRIPT_TOPIC = 'meet-meet-transcript'
+export const LIVEKIT_TRANSLATION_TOPIC = 'meet-meet-translation'
+export const LIVEKIT_MEETING_CONTROL_TOPIC = 'meet-meet-room-control'
 
 export type LiveKitChatSenderRole = 'host' | 'guest' | 'system'
 

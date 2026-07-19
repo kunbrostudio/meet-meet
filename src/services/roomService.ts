@@ -2,7 +2,7 @@ import { STORAGE_KEYS } from '../constants/storageKeys'
 import type { Room } from '../types'
 import { apiUrl } from './apiClient'
 
-const ROOM_CODE_PATTERN = /^MER-[A-Z0-9]{6}$/
+const ROOM_CODE_PATTERN = /^MMT-[A-Z0-9]{6}$/
 const ROOM_CODE_CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 function generateMeetingId(): string {
@@ -12,13 +12,13 @@ function generateMeetingId(): string {
 
 export function generateRoomCode(): string {
   const suffix = Array.from(
-    { length: 4 },
+    { length: 6 },
     () => ROOM_CODE_CHARACTERS[
       Math.floor(Math.random() * ROOM_CODE_CHARACTERS.length)
     ],
   ).join('')
 
-  return `MER-${suffix}`
+  return `MMT-${suffix}`
 }
 
 export function saveCurrentRoom(room: Room): void {
@@ -80,7 +80,7 @@ export function createRoom(): Room {
   const room: Room = {
     meetingId: generateMeetingId(),
     roomCode: generateRoomCode(),
-    title: 'Weekly Product Sync',
+    title: 'MEET MEET Room',
     createdAt: new Date().toISOString(),
     meetingRole: 'host',
   }
@@ -99,7 +99,7 @@ export function joinRoomByCode(roomCode: string): Room | null {
   const room: Room = {
     meetingId: generateMeetingId(),
     roomCode: normalizedCode,
-    title: 'Say, Merang Meeting',
+    title: 'MEET MEET Room',
     createdAt: new Date().toISOString(),
     meetingRole: 'participant',
   }
@@ -158,7 +158,7 @@ export async function createServerRoom(input: {
 
   if (!response.ok || !details.room) {
     throw new Error(
-      getFreeBetaErrorMessage(details, '회의실을 생성하지 못했습니다.'),
+      getFreeBetaErrorMessage(details, '방을 생성하지 못했습니다.'),
     )
   }
 
@@ -195,7 +195,7 @@ export async function joinServerRoomByCode(input: {
 
   if (!response.ok || !details.room) {
     throw new Error(
-      getFreeBetaErrorMessage(details, '회의실에 입장하지 못했습니다.'),
+      getFreeBetaErrorMessage(details, '방에 입장하지 못했습니다.'),
     )
   }
 

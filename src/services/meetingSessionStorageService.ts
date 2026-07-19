@@ -131,14 +131,14 @@ export function saveMeetingSession(
 
   const session: MeetingSessionRecord = normalizeMeetingSession({
     meetingId: input.meetingId,
-    roomCode: input.roomCode ?? previous?.roomCode ?? 'MER-LOCAL',
-    roomName: input.roomName ?? previous?.roomName ?? 'Say, Merang Meeting',
+    roomCode: input.roomCode ?? previous?.roomCode ?? 'MMT-LOCAL',
+    roomName: input.roomName ?? previous?.roomName ?? 'MEET MEET Room',
     title:
       input.title
       ?? input.roomName
       ?? previous?.title
       ?? previous?.roomName
-      ?? 'Say, Merang Meeting',
+      ?? 'MEET MEET Room',
     createdAt: input.createdAt ?? previous?.createdAt ?? now,
     startedAt: input.startedAt ?? previous?.startedAt ?? input.createdAt ?? now,
     endedAt: input.endedAt ?? previous?.endedAt,

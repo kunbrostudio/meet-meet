@@ -9,7 +9,7 @@ export function AppHeader({ onLogoClick }: AppHeaderProps) {
     <header className="app-header app-header-minimal">
       <div className="container header-inner">
         <Logo onClick={onLogoClick} />
-        <span className="header-service-label">실시간 회의 통역</span>
+        <span className="header-service-label">실시간 화상 놀이터</span>
       </div>
     </header>
   )

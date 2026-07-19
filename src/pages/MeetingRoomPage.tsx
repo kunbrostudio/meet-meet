@@ -58,6 +58,7 @@ import {
 import { copyToClipboard } from '../services/roomService'
 import {
   getAudioInputDevices,
+  getAudioOutputDevices,
   getVideoInputDevices,
   requestMediaStream,
   stopMediaStream,
@@ -199,13 +200,13 @@ export function MeetingRoomPage({
       ...loadTranslations(meetingId),
     ]),
   )
-  const [translationTargetLanguage, setTranslationTargetLanguage] =
+  const [translationTargetLanguage] =
     useState<LanguageCode>(
       targetLanguage === 'ko' || targetLanguage === 'en'
         ? targetLanguage
         : 'en',
     )
-  const [autoTranslationEnabled, setAutoTranslationEnabled] = useState(false)
+  const [autoTranslationEnabled] = useState(false)
   const [translatingKeys, setTranslatingKeys] = useState<string[]>([])
   const [sttEnabled, setSttEnabled] = useState(false)
   const [
@@ -224,9 +225,7 @@ export function MeetingRoomPage({
     () => !window.matchMedia('(max-width: 900px)').matches,
   )
   const [conversationTab, setConversationTab] =
-    useState<ConversationTab>(
-      TRANSLATION_MODE_CONFIG.canUseTranscriptView ? 'transcript' : 'chat',
-    )
+    useState<ConversationTab>('chat')
   const [viewMode, setViewMode] = useState<'grid' | 'focus'>('grid')
   const [selectedMainParticipantId, setSelectedMainParticipantId] = useState(
     () => (
@@ -244,6 +243,7 @@ export function MeetingRoomPage({
   const [settingsMessage, setSettingsMessage] = useState('')
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
   const [isChangingDevice, setIsChangingDevice] = useState(false)
   const [screenShareStream, setScreenShareStream] =
     useState<MediaStream | null>(null)
@@ -620,9 +620,7 @@ export function MeetingRoomPage({
   const handleToggleSpeechRecognition = () => {
     const isAutoStart = autoStartInProgressRef.current
     if (!isAutoStart) {
-      setConversationTab(
-        TRANSLATION_MODE_CONFIG.canUseTranscriptView ? 'transcript' : 'chat',
-      )
+      setConversationTab('chat')
       setIsConversationOpen(true)
       setShowCaptionHint(false)
     }
@@ -737,12 +735,14 @@ export function MeetingRoomPage({
     setSettingsMessage('')
 
     try {
-      const [nextVideoDevices, nextAudioDevices] = await Promise.all([
+      const [nextVideoDevices, nextAudioDevices, nextSpeakerDevices] = await Promise.all([
         getVideoInputDevices(),
         getAudioInputDevices(),
+        getAudioOutputDevices(),
       ])
       setVideoDevices(nextVideoDevices)
       setAudioDevices(nextAudioDevices)
+      setSpeakerDevices(nextSpeakerDevices)
     } catch {
       setSettingsMessage('장치 목록을 불러오는 중 문제가 발생했습니다.')
     }
@@ -831,9 +831,17 @@ export function MeetingRoomPage({
   }
 
   const changeMeetingDevice = async (
-    kind: 'video' | 'audio',
+    kind: 'video' | 'audio' | 'speaker',
     deviceId: string,
   ) => {
+    if (kind === 'speaker') {
+      onDeviceSelectionChange({
+        ...deviceSelection,
+        speakerDeviceId: deviceId,
+      })
+      return
+    }
+
     if (
       localParticipantId === undefined
       || !localParticipantName
@@ -896,7 +904,7 @@ export function MeetingRoomPage({
       const controller = liveKitMediaControllerRef.current
 
       if (!controller) {
-        setSpeechMessage('회의 미디어 연결을 준비하는 중입니다.')
+        setSpeechMessage('방 미디어 연결을 준비하는 중입니다.')
         return
       }
 
@@ -1027,7 +1035,7 @@ export function MeetingRoomPage({
       || liveKitStatus === 'kicked'
 
     if (isWaitingForLiveConnection) {
-      setChatSendMessage('회의에 연결된 후 채팅을 보낼 수 있습니다.')
+      setChatSendMessage('방에 연결된 후 채팅을 보낼 수 있습니다.')
       return
     }
 
@@ -1375,7 +1383,7 @@ export function MeetingRoomPage({
     } catch (error) {
       const reason = error instanceof Error
         ? error.message
-        : '회의 연결을 준비하지 못했습니다.'
+        : '방 연결을 준비하지 못했습니다.'
       setLiveKitConnection(null)
       setIsLiveKitConnected(false)
       if (terminalPhaseRef.current) {
@@ -1383,7 +1391,7 @@ export function MeetingRoomPage({
       }
       setLiveKitStatus('failed')
       setLiveKitMessage(
-        `회의 연결에 실패했습니다. 로컬 모드로 계속 진행합니다. ${reason}`,
+        `방 연결에 실패했습니다. 로컬 모드로 계속 진행합니다. ${reason}`,
       )
     } finally {
       if (liveKitConnectingRoomRef.current === roomNameForConnection) {
@@ -1452,7 +1460,7 @@ export function MeetingRoomPage({
     setIsLiveKitOverlayOpen(false)
     setIsScreenShareExpanded(false)
     setLiveKitStatus('kicked')
-    setLiveKitMessage('방장에 의해 미팅에서 퇴장되었습니다.')
+    setLiveKitMessage('방장에 의해 방에서 퇴장되었습니다.')
     setIsLiveKitConnecting(false)
     setIsLiveKitConnected(false)
     setLiveKitConnection(null)
@@ -1740,14 +1748,11 @@ export function MeetingRoomPage({
   const connectionLoadingTitle =
     liveKitConnectionPhase === 'connected' && liveKitParticipants.length === 0
       ? '참가자 정보를 불러오는 중입니다...'
-      : '회의에 연결 중입니다...'
+      : '방에 연결 중입니다...'
 
   const openConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
     setIsScreenShareExpanded(false)
-    const nextTab =
-      !TRANSLATION_MODE_CONFIG.canUseTranscriptView && tab === 'transcript'
-        ? 'chat'
-        : tab
+    const nextTab = tab
     setConversationTab(nextTab)
     setIsParticipantsOpen(false)
     setIsSettingsOpen(false)
@@ -2028,7 +2033,7 @@ export function MeetingRoomPage({
         const dataController = liveKitDataControllerRef.current
         const endedAt = new Date().toISOString()
         const { systemMessage, nextMessages } = appendSystemChatMessage(
-          `${actor.name}님이 회의를 종료했습니다.`,
+          `${actor.name}님이 방을 종료했습니다.`,
         )
 
         if (
@@ -2110,12 +2115,12 @@ export function MeetingRoomPage({
         meetingExitInProgressRef.current = true
         setLiveKitStatus('ended')
         setIsMeetingEndedRemotely(true)
-        setLiveKitMessage('방장이 회의를 종료했습니다.')
+        setLiveKitMessage('방장이 방을 종료했습니다.')
         const nextMessages = [
           ...chatMessages,
           createSystemMessage({
             meetingId,
-            message: `${message.payload.endedByName}님이 회의를 종료했습니다.`,
+            message: `${message.payload.endedByName}님이 방을 종료했습니다.`,
           }),
         ]
         setChatMessages(nextMessages)
@@ -2397,8 +2402,8 @@ export function MeetingRoomPage({
       {(liveKitStatus === 'failed' || liveKitStatus === 'local') && (
         <div className="livekit-connection-notice" role="status">
           {liveKitStatus === 'failed'
-            ? '회의 연결에 실패했습니다. 로컬 데모 모드입니다. 실제 회의 연결이 아닙니다.'
-            : '로컬 데모 모드입니다. 실제 회의 연결이 아닙니다.'}
+            ? '방 연결에 실패했습니다. 로컬 데모 모드입니다. 실제 화상방 연결이 아닙니다.'
+            : '로컬 데모 모드입니다. 실제 화상방 연결이 아닙니다.'}
         </div>
       )}
 
@@ -2420,20 +2425,20 @@ export function MeetingRoomPage({
           {wasRemovedFromMeeting ? (
             <div className="meeting-connection-state is-terminal">
               <Icon name="users" size={28} />
-              <strong>방장에 의해 미팅에서 퇴장되었습니다.</strong>
+              <strong>방장에 의해 방에서 퇴장되었습니다.</strong>
               <p>다시 참여하려면 초대 링크 또는 룸코드로 재입장해 주세요.</p>
             </div>
           ) : isMeetingEndedRemotely ? (
             <div className="meeting-connection-state">
               <span className="meeting-connection-spinner" />
-              <strong>회의가 종료되었습니다.</strong>
-              <p>회의 요약 화면으로 이동하고 있어요.</p>
+              <strong>방이 종료되었습니다.</strong>
+              <p>홈으로 이동하고 있어요.</p>
             </div>
           ) : isEndingMeeting ? (
             <div className="meeting-connection-state">
               <span className="meeting-connection-spinner" />
-              <strong>회의 기록을 저장하고 있어요.</strong>
-              <p>잠시 후 요약 화면으로 이동합니다.</p>
+              <strong>방을 정리하고 있어요.</strong>
+              <p>잠시 후 홈으로 이동합니다.</p>
             </div>
           ) : shouldHoldVideoForConnection ? (
             <div className="meeting-connection-state">
@@ -2466,9 +2471,6 @@ export function MeetingRoomPage({
               {!isScreenShareFullscreen && (
                 <VideoGrid
                   participants={displayedParticipants}
-                  transcripts={transcripts}
-                  targetLanguage={targetLanguage}
-                  captionSize={captionSize}
                   compact={isScreenShareLayoutActive}
                   viewMode={isScreenShareLayoutActive ? 'grid' : viewMode}
                   selectedParticipantId={activeMainParticipantId}
@@ -2485,36 +2487,16 @@ export function MeetingRoomPage({
           )}
         </div>
         <ConversationPanel
-          participants={displayedParticipants.length > 0 ? displayedParticipants : roomParticipants}
-          transcripts={transcripts}
           chatMessages={chatMessages}
           localParticipantId={
             displayedLocalParticipant?.id ?? localParticipant?.id
           }
-          targetLanguage={targetLanguage}
-          translationTargetLanguage={translationTargetLanguage}
-          autoTranslationEnabled={autoTranslationEnabled}
-          canUseManualTranslation={TRANSLATION_MODE_CONFIG.canUseManualTranslation}
-          canUseAutoTranslation={TRANSLATION_MODE_CONFIG.canUseAutoTranslation}
-          canUseTranscriptView={TRANSLATION_MODE_CONFIG.canUseTranscriptView}
-          translationMode={TRANSLATION_MODE_CONFIG.mode}
-          translations={translations}
-          translatingKeys={translatingKeys}
           isOpen={isConversationOpen}
-          activeTab={conversationTab}
           chatUnreadCount={chatUnreadCount}
-          onTabChange={(tab) => openConversationPanel(tab)}
           onClose={closeConversationPanel}
           onSendChatMessage={sendChatMessage}
           canSendChatMessage={canSendChatMessage}
           chatSendMessage={chatSendMessage}
-          onTranslationTargetLanguageChange={setTranslationTargetLanguage}
-          onAutoTranslationChange={(enabled) => {
-            setAutoTranslationEnabled(
-              TRANSLATION_MODE_CONFIG.canUseAutoTranslation && enabled,
-            )
-          }}
-          onTranslateItem={translateConversationItem}
         />
       </div>
 
@@ -2553,6 +2535,7 @@ export function MeetingRoomPage({
           deviceSelection={deviceSelection}
           videoDevices={videoDevices}
           audioDevices={audioDevices}
+          speakerDevices={speakerDevices}
           isChangingDevice={isChangingDevice}
           message={settingsMessage}
           captionSize={captionSize}
@@ -2658,7 +2641,7 @@ export function MeetingRoomPage({
 
               setLiveKitStatus('failed')
               setLiveKitMessage(
-                '회의 연결에 실패했습니다. 로컬 모드로 계속 진행합니다.',
+                '방 연결에 실패했습니다. 로컬 모드로 계속 진행합니다.',
               )
             }}
             onRemovedFromMeeting={() => {
@@ -2674,7 +2657,7 @@ export function MeetingRoomPage({
 
               if (terminalPhaseRef.current === 'kicked') {
                 setLiveKitStatus('kicked')
-                setLiveKitMessage('방장에 의해 미팅에서 퇴장되었습니다.')
+                setLiveKitMessage('방장에 의해 방에서 퇴장되었습니다.')
                 return
               }
 
@@ -2720,10 +2703,10 @@ export function MeetingRoomPage({
               <Icon name="users" size={20} />
             </span>
             <h2 id="livekit-removed-title">
-              방장에 의해 미팅에서 퇴장되었습니다.
+              방장에 의해 방에서 퇴장되었습니다.
             </h2>
             <p>
-              회의 연결이 종료되었습니다. 다시 참여하려면 홈에서 방 코드로
+              방 연결이 종료되었습니다. 다시 참여하려면 홈에서 방 코드로
               입장해주세요.
             </p>
             <div className="meeting-end-actions">
@@ -2732,7 +2715,7 @@ export function MeetingRoomPage({
                 className="button button-secondary"
                 onClick={onLeave}
               >
-                요약 보기
+                홈으로 이동
               </button>
               <button
                 type="button"
@@ -2751,17 +2734,17 @@ export function MeetingRoomPage({
           isSaving={isEndingMeeting}
           title={
             isCurrentUserHost
-              ? '회의를 종료할까요?'
-              : '미팅에서 나갈까요?'
+              ? '방을 종료할까요?'
+              : '방에서 나갈까요?'
           }
           description={
             isCurrentUserHost
-              ? '모든 참가자의 미팅이 종료되고 회의 요약 화면으로 이동합니다.'
-              : '현재 미팅에서 나가고 회의 요약 화면으로 이동합니다.'
+              ? '모든 참가자의 연결이 종료되고 홈으로 이동합니다.'
+              : '현재 방에서 나가고 홈으로 이동합니다.'
           }
           cancelLabel="취소"
-          confirmLabel={isCurrentUserHost ? '회의 종료' : '나가기'}
-          savingLabel="저장 중..."
+          confirmLabel={isCurrentUserHost ? '방 종료' : '나가기'}
+          savingLabel="정리 중..."
           onContinue={() => setIsEndModalOpen(false)}
           onConfirm={() => void confirmEndMeeting()}
         />

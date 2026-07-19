@@ -76,7 +76,7 @@ export function createSystemMessage({
     id: createMessageId(),
     meetingId,
     senderId: null,
-    senderName: 'Say, Merang',
+    senderName: 'MEET MEET',
     message: message.trim(),
     createdAt: new Date().toISOString(),
     type: 'system',

@@ -145,12 +145,12 @@ export function LiveKitTestRoom({
       ].join(' ')}
       aria-hidden={!isOverlayOpen}
     >
-      <section className="livekit-test-shell" aria-label="회의 연결">
+      <section className="livekit-test-shell" aria-label="방 연결">
         {isOverlayOpen && (
           <header className="livekit-test-header">
             <div>
-              <span>MEETING CONNECTION</span>
-              <h2>회의 연결</h2>
+              <span>ROOM CONNECTION</span>
+              <h2>방 연결</h2>
               <p>{connection.roomName}</p>
             </div>
             <div className="livekit-test-header-actions">

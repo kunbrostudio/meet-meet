@@ -1,4 +1,4 @@
-const STORAGE_PREFIX = 'say-merang'
+const STORAGE_PREFIX = 'meet-meet'
 
 export const STORAGE_KEYS = {
   activeMeeting: `${STORAGE_PREFIX}:active-meeting`,

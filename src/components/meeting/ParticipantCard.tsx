@@ -1,10 +1,7 @@
 import { memo, useEffect, useRef } from 'react'
 import meetingCollaboration from '../../assets/landing/meeting-collaboration.jpg'
 import meetingSpeaker from '../../assets/landing/meeting-speaker.jpg'
-import { getTranslatedText } from '../../fixtures/mockTranscripts'
 import type { Participant } from '../../types/participant'
-import type { Transcript } from '../../types/transcript'
-import type { CaptionSize } from '../../types'
 import { Icon } from '../common/Icon'
 
 const languageLabels: Record<string, string> = {
@@ -17,10 +14,7 @@ const languageLabels: Record<string, string> = {
 
 type ParticipantCardProps = {
   participant: Participant
-  transcript?: Transcript
-  targetLanguage: string
   compact?: boolean
-  captionSize: CaptionSize
   focusMain?: boolean
   selected?: boolean
   onSelect?: () => void
@@ -76,10 +70,7 @@ const ParticipantVideo = memo(
 
 function ParticipantCardComponent({
   participant,
-  transcript,
-  targetLanguage,
   compact = false,
-  captionSize,
   focusMain = false,
   selected = false,
   onSelect,
@@ -110,7 +101,6 @@ function ParticipantCardComponent({
         onSelect ? 'is-selectable' : '',
       ].filter(Boolean).join(' ')}
       style={image ? { backgroundImage: `url(${image})` } : { background: participant.avatarColor }}
-      data-caption-size={captionSize}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (onSelect && (event.key === 'Enter' || event.key === ' ')) {
@@ -158,18 +148,6 @@ function ParticipantCardComponent({
       <span className="participant-mic">
         <Icon name={participant.isMicOn ? 'mic' : 'mic-off'} size={13} />
       </span>
-      {transcript && (
-        <div
-          className="participant-subtitle"
-          data-translation-source={transcript.translationSource}
-          title="실시간 자막"
-        >
-          <span className="subtitle-original">{transcript.sourceText}</span>
-          <span className="subtitle-translated">
-            {getTranslatedText(transcript, targetLanguage)}
-          </span>
-        </div>
-      )}
     </article>
   )
 }
@@ -189,12 +167,7 @@ export const ParticipantCard = memo(
     && previous.participant.cameraTrackId === next.participant.cameraTrackId
     && previous.participant.microphoneTrackSid === next.participant.microphoneTrackSid
     && previous.participant.microphoneTrackId === next.participant.microphoneTrackId
-    && previous.transcript?.id === next.transcript?.id
-    && previous.transcript?.translatedText === next.transcript?.translatedText
-    && previous.transcript?.sourceText === next.transcript?.sourceText
-    && previous.targetLanguage === next.targetLanguage
     && previous.compact === next.compact
-    && previous.captionSize === next.captionSize
     && previous.focusMain === next.focusMain
     && previous.selected === next.selected
   ),

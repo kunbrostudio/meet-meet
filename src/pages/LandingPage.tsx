@@ -32,41 +32,41 @@ export function LandingPage({ onStart, onJoin }: LandingPageProps) {
         <article className="figma-card figma-intro-card">
           <div className="figma-brand">
             <span className="figma-brand-mark">
-              <img src="/images/say-merang-symbol.png" alt="Say, Merang" />
+              MM
             </span>
-            <span>Say, Merang</span>
+            <span>MEET MEET</span>
           </div>
 
           <div className="figma-intro-copy">
-            <span className="figma-kicker">Connect beyond language.</span>
+            <span className="figma-kicker">밋밋</span>
             <h1>
-              Speak freely.<br />
-              Understand<br />
-              <em>everyone.</em>
+              별거 없는 게임,<br />
+              별일 다 생기는<br />
+              <em>방.</em>
             </h1>
           </div>
 
           <p className="figma-card-note">
-            Real-time translation for conversations that feel natural.
+            친구들과 만나서 바로 노는 실시간 화상 놀이터
           </p>
         </article>
 
         <article className="figma-card figma-image-card">
-          <img src={meetingSpeaker} alt="영상 미팅에서 이야기하고 있는 참가자" />
+          <img src={meetingSpeaker} alt="화상방에서 이야기하고 있는 참가자" />
           <div className="image-card-overlay">
-            <span className="image-status"><i /> Live translation</span>
+            <span className="image-status"><i /> Live room</span>
             <div className="image-caption">
-              <span>EN → 한국어</span>
-              <p>Let&apos;s make every conversation count.</p>
+              <span>2-4 friends</span>
+              <p>카메라 켜고 바로 입장하세요.</p>
             </div>
           </div>
         </article>
 
         <article className="figma-card figma-image-card">
-          <img src={meetingCollaboration} alt="화상 회의를 준비하는 팀원들" />
+          <img src={meetingCollaboration} alt="화상방을 준비하는 친구들" />
           <div className="meeting-card-ui">
             <div className="meeting-card-top">
-              <span>Team sync</span>
+              <span>Laugh battle</span>
               <span className="meeting-card-time">09:42</span>
             </div>
             <div className="meeting-card-people">
@@ -81,17 +81,17 @@ export function LandingPage({ onStart, onJoin }: LandingPageProps) {
         <article className="figma-card figma-action-card">
           <div>
             <span className="figma-action-index">04 / GET STARTED</span>
-            <h2>Experience it<br />right now.</h2>
+            <h2>친구들과<br />바로 시작하기.</h2>
           </div>
 
           <div className="figma-entry-actions">
             <button className="figma-start-button" type="button" onClick={onStart}>
-              <span>Start Now</span>
+              <span>방 만들기</span>
               <Icon name="arrow-right" size={21} />
             </button>
 
             <form className={`figma-code-form ${codeError ? 'has-error' : ''}`} onSubmit={joinMeeting}>
-              <label htmlFor="meeting-code">Already have a code?</label>
+              <label htmlFor="meeting-code">코드로 입장</label>
               <div className="figma-code-row">
                 <input
                   id="meeting-code"
@@ -100,10 +100,10 @@ export function LandingPage({ onStart, onJoin }: LandingPageProps) {
                     setCode(event.target.value)
                     setCodeError('')
                   }}
-                  placeholder="Enter Code"
+                  placeholder="MMT-XXXXXX"
                   aria-invalid={Boolean(codeError)}
                 />
-                <button type="submit">Join <Icon name="arrow-right" size={15} /></button>
+                <button type="submit">입장 <Icon name="arrow-right" size={15} /></button>
               </div>
               {codeError && <span className="code-error">{codeError}</span>}
             </form>

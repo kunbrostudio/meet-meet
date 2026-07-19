@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/common/Icon'
-import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
 import {
   getAudioInputDevices,
+  getAudioOutputDevices,
   getVideoInputDevices,
   requestMediaStream,
   toggleTrack,
@@ -16,7 +16,6 @@ import type {
   MediaDeviceSelection,
   MeetingPreferences,
 } from '../types/meeting'
-import type { LanguageCode } from '../types/transcript'
 
 type SetupPageProps = {
   roomCode: string
@@ -44,27 +43,20 @@ export function SetupPage({
   const [micOn, setMicOn] = useState(localMedia.microphoneEnabled)
   const [cameraOn, setCameraOn] = useState(localMedia.cameraEnabled)
   const [name, setName] = useState(initialPreferences.displayName)
-  const [sourceLanguage, setSourceLanguage] = useState(initialPreferences.sourceLanguage)
-  const [targetLanguage, setTargetLanguage] = useState(initialPreferences.targetLanguage)
   const [participantCount, setParticipantCount] = useState(
-    initialPreferences.participantCount ?? 4,
-  )
-  const [autoStartCaption, setAutoStartCaption] = useState(
-    initialPreferences.autoStartCaption ?? true,
+    Math.min(4, Math.max(2, initialPreferences.participantCount ?? 2)),
   )
   const [mediaError, setMediaError] = useState('')
   const [isCheckingMedia, setIsCheckingMedia] = useState(false)
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([])
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([])
   const [copyMessage, setCopyMessage] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const isMountedRef = useRef(true)
   const copyMessageTimerRef = useRef<number | null>(null)
   const autoMediaStartedRef = useRef(false)
-  const languageLockTimerRef = useRef<number | null>(null)
   const mediaConnectedNoticeTimerRef = useRef<number | null>(null)
-  const isLanguageLocked = TRANSLATION_MODE_CONFIG.isPremiumLocked
-  const [languageLockMessage, setLanguageLockMessage] = useState('')
   const [showMediaConnectedNotice, setShowMediaConnectedNotice] = useState(false)
 
   useEffect(() => {
@@ -81,27 +73,11 @@ export function SetupPage({
       if (copyMessageTimerRef.current !== null) {
         window.clearTimeout(copyMessageTimerRef.current)
       }
-      if (languageLockTimerRef.current !== null) {
-        window.clearTimeout(languageLockTimerRef.current)
-      }
       if (mediaConnectedNoticeTimerRef.current !== null) {
         window.clearTimeout(mediaConnectedNoticeTimerRef.current)
       }
     }
   }, [])
-
-  const showLanguageLockMessage = () => {
-    if (languageLockTimerRef.current !== null) {
-      window.clearTimeout(languageLockTimerRef.current)
-    }
-    setLanguageLockMessage(
-      '번역 언어 설정은 프리미엄 계정에서 제공될 예정이며 현재 개발 중입니다.',
-    )
-    languageLockTimerRef.current = window.setTimeout(() => {
-      setLanguageLockMessage('')
-      languageLockTimerRef.current = null
-    }, 3600)
-  }
 
   const copyRoomInformation = async (
     text: string,
@@ -133,10 +109,10 @@ export function SetupPage({
   const startMeeting = () => {
     onJoin({
       displayName: name.trim() || 'Ken Choi',
-      sourceLanguage,
-      targetLanguage,
+      sourceLanguage: 'ko',
+      targetLanguage: 'ko',
       participantCount,
-      autoStartCaption,
+      autoStartCaption: false,
     })
   }
 
@@ -157,9 +133,10 @@ export function SetupPage({
         return
       }
 
-      const [nextVideoDevices, nextAudioDevices] = await Promise.all([
+      const [nextVideoDevices, nextAudioDevices, nextSpeakerDevices] = await Promise.all([
         getVideoInputDevices(),
         getAudioInputDevices(),
+        getAudioOutputDevices(),
       ])
       const activeVideoDeviceId =
         stream.getVideoTracks()[0]?.getSettings().deviceId
@@ -176,10 +153,15 @@ export function SetupPage({
           || activeAudioDeviceId
           || nextAudioDevices[0]?.deviceId
           || '',
+        speakerDeviceId:
+          selection.speakerDeviceId
+          || nextSpeakerDevices[0]?.deviceId
+          || '',
       }
 
       setVideoDevices(nextVideoDevices)
       setAudioDevices(nextAudioDevices)
+      setSpeakerDevices(nextSpeakerDevices)
       onDeviceSelectionChange(nextSelection)
       toggleTrack(stream, 'video', cameraOn)
       toggleTrack(stream, 'audio', micOn)
@@ -198,12 +180,14 @@ export function SetupPage({
       }, 3200)
     } catch (error) {
       if (isMountedRef.current) {
-        const [nextVideoDevices, nextAudioDevices] = await Promise.all([
+        const [nextVideoDevices, nextAudioDevices, nextSpeakerDevices] = await Promise.all([
           getVideoInputDevices(),
           getAudioInputDevices(),
+          getAudioOutputDevices(),
         ])
         setVideoDevices(nextVideoDevices)
         setAudioDevices(nextAudioDevices)
+        setSpeakerDevices(nextSpeakerDevices)
         setMediaError(
           error instanceof DOMException && error.name === 'NotAllowedError'
             ? '카메라/마이크 권한이 차단되었습니다. 브라우저 주소창의 권한 설정을 확인해주세요.'
@@ -247,6 +231,13 @@ export function SetupPage({
     }
     onDeviceSelectionChange(nextSelection)
     void connectMediaDevices(nextSelection)
+  }
+
+  const changeSpeakerDevice = (speakerDeviceId: string) => {
+    onDeviceSelectionChange({
+      ...deviceSelection,
+      speakerDeviceId,
+    })
   }
 
   const toggleMicrophone = () => {
@@ -313,6 +304,26 @@ export function SetupPage({
           <Icon name="chevron-down" size={16} />
         </div>
       </div>
+      <div className="field">
+        <label htmlFor="speaker-device">스피커 선택</label>
+        <div className="select-wrap">
+          <select
+            id="speaker-device"
+            value={deviceSelection.speakerDeviceId ?? ''}
+            onChange={(event) => changeSpeakerDevice(event.target.value)}
+            disabled={speakerDevices.length === 0}
+          >
+            {speakerDevices.length === 0 ? (
+              <option value="">시스템 기본 스피커</option>
+            ) : speakerDevices.map((device, index) => (
+              <option value={device.deviceId} key={device.deviceId}>
+                {device.label || `스피커 ${index + 1}`}
+              </option>
+            ))}
+          </select>
+          <Icon name="chevron-down" size={16} />
+        </div>
+      </div>
     </div>
   )
 
@@ -346,8 +357,8 @@ export function SetupPage({
     <section className="setup-page">
       <div className="container">
         <div className="setup-heading">
-          <h1>미팅 준비가 거의 끝났어요</h1>
-          <p>카메라와 마이크를 확인하고, 사용할 언어를 선택해 주세요.</p>
+          <h1>방 준비가 거의 끝났어요</h1>
+          <p>카메라와 마이크를 확인하고 친구들을 초대해 주세요.</p>
           <div className="setup-room-share">
             <div className="setup-room-identity">
               <span>ROOM CODE</span>
@@ -409,91 +420,13 @@ export function SetupPage({
             {mediaStatus}
           </div>
 
-          <div className="setup-options">
-            <h2>내 미팅 설정</h2>
-            <p>입장 후에도 언제든 변경할 수 있어요.</p>
+            <div className="setup-options">
+            <h2>방 설정</h2>
+            <p>입장 후에도 카메라와 마이크는 언제든 바꿀 수 있어요.</p>
             <div className="field">
               <label htmlFor="display-name">표시 이름</label>
               <input className="input" id="display-name" value={name} onChange={(event) => setName(event.target.value)} />
             </div>
-            <div className={`field ${isLanguageLocked ? 'is-locked-field' : ''}`}>
-              <label htmlFor="language">내가 말할 언어</label>
-              <div className={`select-wrap ${isLanguageLocked ? 'is-locked' : ''}`}>
-                <select
-                  id="language"
-                  value={sourceLanguage}
-                  aria-disabled={isLanguageLocked}
-                  className={isLanguageLocked ? 'is-locked' : ''}
-                  onMouseDown={(event) => {
-                    if (isLanguageLocked) {
-                      event.preventDefault()
-                      showLanguageLockMessage()
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (isLanguageLocked) {
-                      event.preventDefault()
-                      showLanguageLockMessage()
-                    }
-                  }}
-                  onChange={(event) => {
-                    if (isLanguageLocked) {
-                      showLanguageLockMessage()
-                      return
-                    }
-                    setSourceLanguage(event.target.value as LanguageCode)
-                  }}
-                >
-                  <option value="ko">한국어 (Korean)</option>
-                  <option value="en">English</option>
-                  <option value="ja">日本語 (Japanese)</option>
-                  <option value="fr">Français (French)</option>
-                  <option value="zh">中文 (Chinese)</option>
-                </select>
-                <Icon name={isLanguageLocked ? 'lock' : 'chevron-down'} size={16} />
-              </div>
-            </div>
-            <div className={`field ${isLanguageLocked ? 'is-locked-field' : ''}`}>
-              <label htmlFor="translate-language">번역해서 볼 언어</label>
-              <div className={`select-wrap ${isLanguageLocked ? 'is-locked' : ''}`}>
-                <select
-                  id="translate-language"
-                  value={targetLanguage}
-                  aria-disabled={isLanguageLocked}
-                  className={isLanguageLocked ? 'is-locked' : ''}
-                  onMouseDown={(event) => {
-                    if (isLanguageLocked) {
-                      event.preventDefault()
-                      showLanguageLockMessage()
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (isLanguageLocked) {
-                      event.preventDefault()
-                      showLanguageLockMessage()
-                    }
-                  }}
-                  onChange={(event) => {
-                    if (isLanguageLocked) {
-                      showLanguageLockMessage()
-                      return
-                    }
-                    setTargetLanguage(event.target.value as LanguageCode)
-                  }}
-                >
-                  <option value="ko">한국어 (Korean)</option>
-                  <option value="en">English</option>
-                  <option value="ja">日本語 (Japanese)</option>
-                  <option value="zh">中文 (Chinese)</option>
-                </select>
-                <Icon name={isLanguageLocked ? 'lock' : 'chevron-down'} size={16} />
-              </div>
-            </div>
-            {languageLockMessage && (
-              <div className="setup-status setup-status-locked" role="status">
-                <Icon name="lock" size={14} /> {languageLockMessage}
-              </div>
-            )}
             {canSetParticipantCount && (
               <div className="field">
                 <label htmlFor="participant-count">참가자 수</label>
@@ -506,7 +439,7 @@ export function SetupPage({
                       setParticipantCount(nextParticipantCount)
                     }}
                   >
-                    {[1, 2, 3, 4, 6, 8].map((count) => (
+                    {[2, 3, 4].map((count) => (
                       <option value={count} key={count}>{count}명</option>
                     ))}
                   </select>
@@ -514,19 +447,8 @@ export function SetupPage({
                 </div>
               </div>
             )}
-            <label className="caption-auto-start-option">
-              <input
-                type="checkbox"
-                checked={autoStartCaption}
-                onChange={(event) => setAutoStartCaption(event.target.checked)}
-              />
-              <span className="caption-auto-start-check">
-                <Icon name="check" size={13} />
-              </span>
-              <span>입장 후 실시간 자막 자동 시작</span>
-            </label>
             <button className="button button-primary button-wide" type="button" onClick={startMeeting}>
-              Start <Icon name="arrow-right" size={16} />
+              화상방 입장 <Icon name="arrow-right" size={16} />
             </button>
             <button className="back-link" type="button" onClick={onBack}><Icon name="arrow-left" size={14} /> 홈으로 돌아가기</button>
           </div>

@@ -23,6 +23,11 @@ export async function getAudioInputDevices(): Promise<MediaDeviceInfo[]> {
   return devices.filter((device) => device.kind === 'audioinput')
 }
 
+export async function getAudioOutputDevices(): Promise<MediaDeviceInfo[]> {
+  const devices = await getMediaDevices()
+  return devices.filter((device) => device.kind === 'audiooutput')
+}
+
 export async function requestMediaStream({
   videoDeviceId,
   audioDeviceId,

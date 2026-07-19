@@ -111,7 +111,7 @@ const freeBetaConfig = {
   meetingCreationEnabled:
     process.env.FREE_BETA_MEETING_CREATION_ENABLED !== 'false',
 }
-const sessionCookieName = 'say_merang_sid'
+const sessionCookieName = 'meet_meet_sid'
 const roomCodeCharacters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const anonymousSessions = new Map<string, AnonymousSession>()
 const freeBetaRooms = new Map<string, FreeBetaRoom>()
@@ -295,7 +295,7 @@ function generateRoomCode(): string {
       crypto.randomBytes(6).slice(0, 6),
       (byte) => roomCodeCharacters[byte % roomCodeCharacters.length],
     ).join('')
-    const roomCode = `MER-${suffix}`
+    const roomCode = `MMT-${suffix}`
 
     if (!freeBetaRooms.has(roomCode)) {
       return roomCode
@@ -450,7 +450,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       response,
       503,
       'MEETING_CREATION_DISABLED',
-      '새 미팅 생성이 일시적으로 제한되어 있습니다.',
+      '새 방 생성이 일시적으로 제한되어 있습니다.',
     )
     return
   }
@@ -479,7 +479,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       response,
       429,
       'MAX_ACTIVE_ROOMS_REACHED',
-      '현재 생성 가능한 무료 베타 회의실 수를 초과했습니다.',
+      '현재 생성 가능한 무료 베타 방 수를 초과했습니다.',
     )
     return
   }
@@ -496,7 +496,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       response,
       429,
       'SESSION_ACTIVE_ROOM_LIMIT_REACHED',
-      '무료 베타에서는 한 브라우저 세션당 활성 회의실을 1개만 만들 수 있습니다.',
+      '무료 베타에서는 한 브라우저 세션당 활성 방을 1개만 만들 수 있습니다.',
     )
     return
   }
@@ -546,7 +546,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       title:
         typeof title === 'string' && title.trim()
           ? title.trim().slice(0, 120)
-          : 'Weekly Product Sync',
+          : 'MEET MEET Room',
       hostSessionId: session.id,
       hostParticipantIdentity: hostIdentity,
       hostControlTokenHash: hashHostControlToken(hostControlToken),
@@ -586,7 +586,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       response,
       500,
       'ROOM_CREATE_FAILED',
-      '회의실을 생성하지 못했습니다.',
+      '방을 생성하지 못했습니다.',
     )
   }
 })
@@ -658,7 +658,7 @@ app.post('/api/free-beta/rooms/join', (request, response) => {
       response,
       409,
       'ROOM_FULL',
-      '이 회의실은 최대 참여 인원에 도달했습니다.',
+      '이 방은 최대 참여 인원에 도달했습니다.',
     )
     return
   }
@@ -675,7 +675,7 @@ app.post('/api/free-beta/rooms/join', (request, response) => {
       response,
       429,
       'SESSION_ACTIVE_ROOM_LIMIT_REACHED',
-      '무료 베타에서는 한 브라우저 세션당 활성 회의실을 1개만 사용할 수 있습니다.',
+      '무료 베타에서는 한 브라우저 세션당 활성 방을 1개만 사용할 수 있습니다.',
     )
     return
   }
@@ -754,7 +754,7 @@ app.post('/api/livekit/token', async (request, response) => {
       response,
       404,
       'ROOM_NOT_FOUND',
-      '존재하지 않거나 만료된 회의실입니다.',
+      '존재하지 않거나 만료된 방입니다.',
     )
     return
   }
@@ -768,7 +768,7 @@ app.post('/api/livekit/token', async (request, response) => {
       response,
       403,
       'SESSION_NOT_IN_ROOM',
-      '이 세션은 해당 회의실에 입장되어 있지 않습니다.',
+      '이 세션은 해당 방에 입장되어 있지 않습니다.',
     )
     return
   }
@@ -891,7 +891,7 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
       response,
       404,
       'ROOM_NOT_FOUND',
-      '존재하지 않거나 만료된 회의실입니다.',
+      '존재하지 않거나 만료된 방입니다.',
     )
     return
   }
@@ -1036,7 +1036,7 @@ app.post('/api/free-beta/rooms/end', (request, response) => {
       response,
       404,
       'ROOM_NOT_FOUND',
-      '존재하지 않거나 만료된 회의실입니다.',
+      '존재하지 않거나 만료된 방입니다.',
     )
     return
   }
@@ -1187,7 +1187,7 @@ app.post('/api/translate', async (request, response) => {
 })
 
 const server = app.listen(port, () => {
-  console.log(`Say, Merang API server listening on http://localhost:${port}`)
+  console.log(`MEET MEET API server listening on http://localhost:${port}`)
   console.info('[api-server] Configuration', {
     openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
     livekitConfigured: Boolean(

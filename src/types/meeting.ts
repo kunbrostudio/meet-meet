@@ -49,6 +49,7 @@ export type LocalMediaState = {
 export type MediaDeviceSelection = {
   videoDeviceId: string
   audioDeviceId: string
+  speakerDeviceId?: string
 }
 
 export type MeetingMeta = {

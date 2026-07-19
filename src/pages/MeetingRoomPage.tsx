@@ -11,11 +11,8 @@ import { Icon } from '../components/common/Icon'
 import { Logo } from '../components/common/Logo'
 import { ENABLE_MOCK_DATA } from '../constants/mockData'
 import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
-import {
-  ConversationPanel,
-  type ConversationTab,
-} from '../components/meeting/ConversationPanel'
-import { VideoGrid } from '../components/meeting/VideoGrid'
+import { GameBoard } from '../components/game-room/GameBoard'
+import { MeetMeetRoomLayout } from '../components/game-room/MeetMeetRoomLayout'
 import { ScreenShareCard } from '../components/meeting/ScreenShareCard'
 import { ControlBar } from '../components/meeting/ControlBar'
 import { EndMeetingModal } from '../components/meeting/EndMeetingModal'
@@ -145,6 +142,8 @@ type LiveKitConnectionPhase =
   | 'ended'
   | 'leaving'
 
+type ConversationTab = 'chat'
+
 export function MeetingRoomPage({
   meetingId,
   roomCode,
@@ -221,9 +220,7 @@ export function MeetingRoomPage({
     () => loadCaptionPreferences().size,
   )
   const [showCaptionHint, setShowCaptionHint] = useState(true)
-  const [isConversationOpen, setIsConversationOpen] = useState(
-    () => !window.matchMedia('(max-width: 900px)').matches,
-  )
+  const [isConversationOpen, setIsConversationOpen] = useState(true)
   const [conversationTab, setConversationTab] =
     useState<ConversationTab>('chat')
   const [viewMode, setViewMode] = useState<'grid' | 'focus'>('grid')
@@ -291,7 +288,6 @@ export function MeetingRoomPage({
   const controlBarChatButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarParticipantsButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarSettingsButtonRef = useRef<HTMLButtonElement>(null)
-  const conversationOpenButtonRef = useRef<HTMLButtonElement>(null)
   const autoStartAttemptedRef = useRef(false)
   const autoLiveKitConnectRoomRef = useRef<string | null>(null)
   const liveKitConnectingRoomRef = useRef<string | null>(null)
@@ -729,7 +725,6 @@ export function MeetingRoomPage({
   }
 
   const openSettings = useCallback(async () => {
-    setIsConversationOpen(false)
     setIsParticipantsOpen(false)
     setIsSettingsOpen(true)
     setSettingsMessage('')
@@ -1762,39 +1757,12 @@ export function MeetingRoomPage({
     }
   }, [])
 
-  const closeConversationPanel = useCallback(() => {
-    const activeElement = document.activeElement
-
-    if (
-      activeElement instanceof HTMLElement
-      && activeElement.closest('.transcript-panel')
-    ) {
-      activeElement.blur()
-    }
-
-    setIsConversationOpen(false)
-    window.setTimeout(() => {
-      if (controlBarChatButtonRef.current) {
-        controlBarChatButtonRef.current.focus()
-        return
-      }
-
-      conversationOpenButtonRef.current?.focus()
-    }, 0)
-  }, [])
-
   const toggleConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
-    if (isConversationOpen) {
-      closeConversationPanel()
-      return
-    }
-
     openConversationPanel(tab)
-  }, [closeConversationPanel, isConversationOpen, openConversationPanel])
+  }, [openConversationPanel])
 
   const toggleParticipantsPanel = useCallback(() => {
     setIsScreenShareExpanded(false)
-    setIsConversationOpen(false)
     setIsSettingsOpen(false)
     setIsParticipantsOpen((current) => {
       const nextOpen = !current
@@ -1820,15 +1788,13 @@ export function MeetingRoomPage({
       return
     }
 
-    setIsConversationOpen(false)
     setIsParticipantsOpen(false)
     void openSettings()
   }, [isSettingsOpen, openSettings])
 
   useEffect(() => {
     if (
-      !isConversationOpen
-      && !isParticipantsOpen
+      !isParticipantsOpen
       && !isSettingsOpen
     ) {
       return
@@ -1841,11 +1807,6 @@ export function MeetingRoomPage({
         || isScreenShareExpanded
         || participantToRemove
       ) {
-        return
-      }
-
-      if (isConversationOpen) {
-        closeConversationPanel()
         return
       }
 
@@ -1868,8 +1829,6 @@ export function MeetingRoomPage({
     window.addEventListener('keydown', closePanelOnEscape)
     return () => window.removeEventListener('keydown', closePanelOnEscape)
   }, [
-    closeConversationPanel,
-    isConversationOpen,
     isEndModalOpen,
     isParticipantsOpen,
     isSettingsOpen,
@@ -2215,7 +2174,7 @@ export function MeetingRoomPage({
       if (
         message.type === 'chat-message'
         && !isMine
-        && (!isConversationOpen || conversationTab !== 'chat')
+        && conversationTab !== 'chat'
       ) {
         setChatUnreadCount((current) => current + 1)
       }
@@ -2235,7 +2194,6 @@ export function MeetingRoomPage({
       displayedLocalParticipant,
       displayedParticipants,
       finalizeMeetingAndNavigate,
-      isConversationOpen,
       liveKitConnection?.participantIdentity,
       markParticipantKicked,
       meetingId,
@@ -2410,7 +2368,7 @@ export function MeetingRoomPage({
       <div
         className={[
           'meeting-layout',
-          isConversationOpen ? 'conversation-open' : 'conversation-closed',
+          'meet-meet-game-layout-shell',
           viewMode === 'focus' ? 'is-focus-mode' : '',
           isScreenShareFullscreen ? 'screen-share-fullscreen' : '',
         ].filter(Boolean).join(' ')}
@@ -2448,7 +2406,7 @@ export function MeetingRoomPage({
             </div>
           ) : (
             <>
-              {activeScreenShareStream && (
+              {isScreenShareFullscreen && activeScreenShareStream ? (
                 <ScreenShareCard
                   stream={activeScreenShareStream}
                   participantName={
@@ -2459,7 +2417,6 @@ export function MeetingRoomPage({
                   canStop={!isLiveKitConnected || isLocalScreenSharing}
                   isExpanded={isScreenShareFullscreen}
                   onExpand={() => {
-                    setIsConversationOpen(false)
                     setIsParticipantsOpen(false)
                     setIsSettingsOpen(false)
                     setIsScreenShareExpanded(true)
@@ -2467,64 +2424,54 @@ export function MeetingRoomPage({
                   onCollapse={() => setIsScreenShareExpanded(false)}
                   onStop={() => void toggleScreenShare()}
                 />
-              )}
-              {!isScreenShareFullscreen && (
-                <VideoGrid
+              ) : (
+                <MeetMeetRoomLayout
                   participants={displayedParticipants}
-                  compact={isScreenShareLayoutActive}
-                  viewMode={isScreenShareLayoutActive ? 'grid' : viewMode}
                   selectedParticipantId={activeMainParticipantId}
                   onSelectParticipant={(participantId) => {
                     setSelectedMainParticipantId(participantId)
-                    if (!isScreenShareLayoutActive) {
-                      setViewMode('focus')
-                    }
+                    setViewMode('focus')
                   }}
                   onReconnectMedia={onReconnectMedia}
+                  board={(
+                    <GameBoard
+                      phase="waiting"
+                      chatMessages={chatMessages}
+                      localParticipantId={
+                        displayedLocalParticipant?.id ?? localParticipant?.id
+                      }
+                      onSendChatMessage={sendChatMessage}
+                      canSendChatMessage={canSendChatMessage}
+                      chatSendMessage={chatSendMessage}
+                      screenShareSlot={
+                        activeScreenShareStream ? (
+                          <ScreenShareCard
+                            stream={activeScreenShareStream}
+                            participantName={
+                              isLiveKitConnected
+                                ? liveKitScreenShare?.participantName
+                                : localParticipant?.name
+                            }
+                            canStop={!isLiveKitConnected || isLocalScreenSharing}
+                            isExpanded={false}
+                            onExpand={() => {
+                              setIsParticipantsOpen(false)
+                              setIsSettingsOpen(false)
+                              setIsScreenShareExpanded(true)
+                            }}
+                            onCollapse={() => setIsScreenShareExpanded(false)}
+                            onStop={() => void toggleScreenShare()}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  )}
                 />
               )}
             </>
           )}
         </div>
-        <ConversationPanel
-          chatMessages={chatMessages}
-          localParticipantId={
-            displayedLocalParticipant?.id ?? localParticipant?.id
-          }
-          isOpen={isConversationOpen}
-          chatUnreadCount={chatUnreadCount}
-          onClose={closeConversationPanel}
-          onSendChatMessage={sendChatMessage}
-          canSendChatMessage={canSendChatMessage}
-          chatSendMessage={chatSendMessage}
-        />
       </div>
-
-      <button
-        className={`conversation-mobile-backdrop ${isConversationOpen ? 'is-open' : ''}`}
-        type="button"
-        onClick={closeConversationPanel}
-        aria-label="대화 패널 닫기"
-        tabIndex={isConversationOpen ? 0 : -1}
-      />
-
-      {!isConversationOpen && (
-        <button
-          ref={conversationOpenButtonRef}
-          className="conversation-open-button"
-          type="button"
-          onClick={() => openConversationPanel(
-            chatUnreadCount > 0 ? 'chat' : conversationTab,
-          )}
-        >
-          <Icon name="message" size={15} /> 대화 열기
-          {chatUnreadCount > 0 && (
-            <span className="conversation-open-badge">
-              {Math.min(chatUnreadCount, 99)}
-            </span>
-          )}
-        </button>
-      )}
 
       {isSettingsOpen && (
         <MeetingSettingsPanel

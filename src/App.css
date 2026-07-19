@@ -5703,3 +5703,570 @@
     display: grid;
   }
 }
+
+/* MEET MEET game room */
+.meeting-layout.meet-meet-game-layout-shell {
+  grid-template-columns: minmax(0, 1fr);
+  height: calc(100dvh - 190px);
+  gap: 0;
+}
+
+.meeting-layout.meet-meet-game-layout-shell.conversation-closed,
+.meeting-layout.meet-meet-game-layout-shell.conversation-open {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.meeting-page:has(.livekit-connection-notice)
+  .meeting-layout.meet-meet-game-layout-shell {
+  height: calc(100dvh - 232px);
+}
+
+.meet-meet-game-layout-shell .video-area {
+  padding: 0;
+}
+
+.meet-meet-room-layout {
+  display: grid;
+  grid-template-columns:
+    minmax(280px, 32fr)
+    minmax(320px, 36fr)
+    minmax(280px, 32fr);
+  grid-template-areas: "left board right";
+  gap: 16px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.participant-column {
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.participant-column.is-left {
+  grid-area: left;
+}
+
+.participant-column.is-right {
+  grid-area: right;
+}
+
+.participant-column[data-count="2"] {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.participant-game-card {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 2px solid transparent;
+  border-radius: 16px;
+  box-shadow: 0 2px 10px rgba(33, 47, 75, 0.08);
+  isolation: isolate;
+}
+
+.participant-column[data-count="2"] .participant-game-card {
+  align-self: center;
+  justify-self: center;
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+}
+
+.participant-game-card.is-selectable {
+  cursor: pointer;
+}
+
+.participant-game-card.is-selected,
+.participant-game-card.speaking {
+  border-color: var(--blue);
+  box-shadow:
+    0 0 0 3px rgba(23, 105, 255, 0.08),
+    0 12px 28px rgba(23, 105, 255, 0.14);
+}
+
+.participant-game-overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 10px 10px auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.participant-game-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  max-width: calc(100% - 38px);
+  color: white;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.participant-game-name span {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participant-game-name small {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  border-radius: 6px;
+  color: white;
+  background: rgba(12, 20, 34, 0.54);
+  backdrop-filter: blur(7px);
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.participant-game-mic {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: white;
+  background: rgba(12, 20, 34, 0.55);
+  backdrop-filter: blur(7px);
+}
+
+.participant-game-mic.is-off {
+  background: rgba(224, 67, 67, 0.86);
+}
+
+.participant-game-status-slot {
+  position: absolute;
+  z-index: 2;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.participant-waiting-slot {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px dashed #cfd8e6;
+  border-radius: 16px;
+  color: #7d899d;
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.meet-meet-board-shell {
+  grid-area: board;
+  justify-self: center;
+  width: 100%;
+  max-width: 680px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.game-board {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #dfe6f0;
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 255, 0.98));
+  box-shadow: 0 10px 32px rgba(45, 62, 95, 0.06);
+}
+
+.game-board-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.game-board-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.game-board-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.game-board-title strong {
+  display: block;
+  color: var(--navy);
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.game-board-title p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.game-board-phase {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid #dbe6fb;
+  border-radius: 999px;
+  color: var(--blue);
+  background: #f8fbff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.game-board-screen-share {
+  flex: 0 0 auto;
+  padding: 12px 14px 0;
+}
+
+.game-board-screen-share .screen-share-card {
+  max-height: min(27dvh, 240px);
+  border-radius: 14px;
+}
+
+.game-chat-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.game-chat-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  scrollbar-color: #d7deea transparent;
+  scrollbar-width: thin;
+}
+
+.game-chat-composer {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 9px;
+  margin: 0 18px 16px;
+  padding: 9px;
+  border: 1px solid #dfe5ef;
+  border-radius: 13px;
+  background: #f8faff;
+}
+
+.game-chat-composer textarea {
+  min-height: 40px;
+  max-height: 108px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: var(--navy);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.game-chat-composer button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: white;
+  background: var(--blue);
+}
+
+.game-chat-composer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.game-chat-feedback {
+  margin: -8px 20px 12px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.game-board-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  min-height: 100%;
+  padding: 30px;
+  text-align: center;
+}
+
+.game-board-empty-state > span {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 14px;
+  border-radius: 15px;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.game-board-empty-state strong {
+  color: var(--navy);
+  font-size: 14px;
+}
+
+.game-board-empty-state p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (max-width: 1120px) {
+  .meeting-layout.meet-meet-game-layout-shell {
+    height: calc(100dvh - 184px);
+  }
+
+  .meet-meet-room-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(360px, 1fr) auto auto;
+    grid-template-areas:
+      "board"
+      "left"
+      "right";
+    overflow: auto;
+    padding-bottom: 4px;
+  }
+
+  .participant-column {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 10px;
+  }
+
+  .participant-column[data-count="1"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .participant-column[data-count="2"] {
+    grid-template-rows: none;
+  }
+
+  .participant-waiting-slot {
+    min-height: 120px;
+  }
+}
+
+@media (max-width: 620px) and (orientation: portrait) {
+  .meeting-layout.meet-meet-game-layout-shell {
+    flex: 1 1 auto;
+    height: auto;
+    margin-top: 7px;
+    padding-bottom: calc(88px + env(safe-area-inset-bottom));
+  }
+
+  .meeting-page:has(.livekit-connection-notice)
+    .meeting-layout.meet-meet-game-layout-shell {
+    height: auto;
+  }
+
+  .meet-meet-room-layout {
+    grid-template-rows: minmax(360px, 0.92fr) auto auto;
+    gap: 10px;
+  }
+
+  .game-board {
+    min-height: 360px;
+    border-radius: 16px;
+  }
+
+  .game-board-header {
+    padding: 12px;
+  }
+
+  .game-board-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .game-board-title strong {
+    font-size: 14px;
+  }
+
+  .game-board-title p {
+    display: none;
+  }
+
+  .game-board-phase {
+    padding: 6px 8px;
+    font-size: 9px;
+  }
+
+  .game-chat-list {
+    padding: 12px;
+  }
+
+  .game-chat-composer {
+    grid-template-columns: minmax(0, 1fr) 36px;
+    margin: 0 12px 12px;
+    padding: 7px;
+  }
+
+  .game-chat-composer textarea {
+    min-height: 36px;
+    max-height: 86px;
+  }
+
+  .game-chat-composer button {
+    width: 36px;
+    height: 36px;
+  }
+
+  .participant-column {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .participant-game-overlay {
+    inset: 8px 8px auto;
+  }
+
+  .participant-game-name {
+    font-size: 10px;
+  }
+
+  .participant-game-mic {
+    width: 25px;
+    height: 25px;
+  }
+}
+
+@media (max-width: 960px) and (orientation: landscape) {
+  .meeting-layout.meet-meet-game-layout-shell {
+    height: auto;
+    padding-bottom: 0;
+  }
+
+  .meet-meet-room-layout {
+    grid-template-columns:
+      minmax(110px, 18vw)
+      minmax(280px, 1fr)
+      minmax(110px, 18vw);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "left board right";
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .participant-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: center;
+    gap: 8px;
+    overflow: hidden;
+  }
+
+  .participant-column[data-count="2"] {
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+
+  .participant-game-card,
+  .participant-waiting-slot {
+    border-radius: 12px;
+  }
+
+  .participant-game-name {
+    font-size: 9px;
+  }
+
+  .participant-game-name small {
+    display: none;
+  }
+
+  .participant-game-mic {
+    width: 23px;
+    height: 23px;
+  }
+
+  .game-board {
+    border-radius: 14px;
+  }
+
+  .game-board-header {
+    padding: 9px 10px;
+  }
+
+  .game-board-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .game-board-title strong {
+    font-size: 12px;
+  }
+
+  .game-board-title p {
+    display: none;
+  }
+
+  .game-chat-list {
+    padding: 9px;
+  }
+
+  .game-chat-composer {
+    grid-template-columns: minmax(0, 1fr) 32px;
+    gap: 6px;
+    margin: 0 9px 9px;
+    padding: 6px;
+  }
+
+  .game-chat-composer textarea {
+    min-height: 31px;
+    max-height: 62px;
+    font-size: 10px;
+  }
+
+  .game-chat-composer button {
+    width: 32px;
+    height: 32px;
+  }
+}

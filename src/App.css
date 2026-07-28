@@ -6284,3 +6284,418 @@
     height: 32px;
   }
 }
+
+/* Step 5-C: MEET MEET arcade game room visual theme */
+.meeting-page {
+  --mm-arcade-bg: #050816;
+  --mm-arcade-panel: rgba(9, 17, 38, 0.9);
+  --mm-arcade-panel-strong: rgba(13, 23, 52, 0.96);
+  --mm-arcade-line: rgba(99, 241, 255, 0.18);
+  --mm-arcade-line-hot: rgba(255, 61, 198, 0.26);
+  --mm-arcade-cyan: #63f1ff;
+  --mm-arcade-cyan-soft: rgba(99, 241, 255, 0.13);
+  --mm-arcade-magenta: #ff3dc6;
+  --mm-arcade-magenta-soft: rgba(255, 61, 198, 0.13);
+  --mm-arcade-text: #e9f8ff;
+  --mm-arcade-muted: #8da7bd;
+  --mm-arcade-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+  color: var(--mm-arcade-text);
+  background:
+    linear-gradient(rgba(99, 241, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 241, 255, 0.016) 1px, transparent 1px),
+    #050816;
+  background-size: 42px 42px, 42px 42px, auto;
+}
+
+.meeting-page .meeting-header {
+  border-color: rgba(99, 241, 255, 0.24);
+  color: var(--mm-arcade-text);
+  background:
+    linear-gradient(180deg, rgba(14, 26, 58, 0.94), rgba(7, 14, 32, 0.92));
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.08) inset,
+    0 16px 46px rgba(0, 0, 0, 0.32),
+    0 0 34px rgba(99, 241, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.meeting-page .meeting-header .brand,
+.meeting-page .meeting-header-main > strong {
+  color: var(--mm-arcade-text);
+}
+
+.meeting-page .meeting-header .brand-mark {
+  border: 1px solid rgba(99, 241, 255, 0.34);
+  color: var(--mm-arcade-cyan);
+  background: rgba(99, 241, 255, 0.09);
+  box-shadow: 0 0 14px rgba(99, 241, 255, 0.16);
+}
+
+.meeting-page .meeting-header-divider {
+  background: rgba(99, 241, 255, 0.22);
+}
+
+.meeting-page .meeting-room-code,
+.meeting-page .participant-count,
+.meeting-page .meeting-time {
+  border-color: rgba(99, 241, 255, 0.22);
+  color: var(--mm-arcade-cyan);
+  background: rgba(99, 241, 255, 0.08);
+}
+
+.meeting-page .meeting-room-code:hover {
+  border-color: rgba(255, 61, 198, 0.5);
+  color: var(--mm-arcade-magenta);
+  background: rgba(255, 61, 198, 0.11);
+}
+
+.meeting-page .live-pill,
+.meeting-page .livekit-header-mode {
+  border: 1px solid rgba(255, 61, 198, 0.28);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.11);
+}
+
+.meeting-page .live-pill i,
+.meeting-page .livekit-header-mode::before {
+  background: var(--mm-arcade-magenta);
+  box-shadow: 0 0 8px rgba(255, 61, 198, 0.46);
+}
+
+.meeting-page .livekit-connection-notice {
+  border-color: rgba(255, 61, 198, 0.32);
+  color: #ffd7f4;
+  background: rgba(40, 12, 42, 0.9);
+}
+
+.meeting-page .meet-meet-room-layout {
+  gap: 18px;
+}
+
+.meeting-page .participant-game-card {
+  border: 1px solid rgba(99, 241, 255, 0.24);
+  border-radius: 12px;
+  background-color: #071226;
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.06) inset,
+    0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+.meeting-page .participant-game-card::before,
+.meeting-page .game-board::before,
+.meeting-page .participant-waiting-slot::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  border: 1px solid transparent;
+  clip-path: polygon(
+    0 0,
+    22px 0,
+    22px 3px,
+    3px 3px,
+    3px 22px,
+    0 22px,
+    0 0,
+    100% 0,
+    100% 22px,
+    calc(100% - 3px) 22px,
+    calc(100% - 3px) 3px,
+    calc(100% - 22px) 3px,
+    calc(100% - 22px) 0,
+    100% 0,
+    100% 100%,
+    calc(100% - 22px) 100%,
+    calc(100% - 22px) calc(100% - 3px),
+    calc(100% - 3px) calc(100% - 3px),
+    calc(100% - 3px) calc(100% - 22px),
+    100% calc(100% - 22px),
+    100% 100%,
+    0 100%,
+    0 calc(100% - 22px),
+    3px calc(100% - 22px),
+    3px calc(100% - 3px),
+    22px calc(100% - 3px),
+    22px 100%,
+    0 100%
+  );
+  background:
+    linear-gradient(90deg, rgba(99, 241, 255, 0.72), rgba(99, 241, 255, 0.72)),
+    linear-gradient(90deg, rgba(255, 61, 198, 0.58), rgba(255, 61, 198, 0.58));
+  background-blend-mode: normal;
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+.meeting-page .participant-game-card.speaking,
+.meeting-page .participant-game-card.is-selected {
+  border-color: rgba(99, 241, 255, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.14) inset,
+    0 20px 52px rgba(0, 0, 0, 0.38),
+    0 0 20px rgba(99, 241, 255, 0.18),
+    0 0 16px rgba(255, 61, 198, 0.1);
+}
+
+.meeting-page .participant-card-shade {
+  background: linear-gradient(180deg, rgba(2, 7, 18, 0.18), transparent 34%, rgba(2, 7, 18, 0.12));
+}
+
+.meeting-page .participant-game-name span,
+.meeting-page .participant-game-name small,
+.meeting-page .participant-game-mic {
+  text-shadow: none;
+}
+
+.meeting-page .participant-game-name span {
+  padding: 5px 8px;
+  border: 1px solid rgba(99, 241, 255, 0.22);
+  border-radius: 8px;
+  color: var(--mm-arcade-text);
+  background: rgba(2, 8, 22, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.meeting-page .participant-game-name small {
+  border: 1px solid rgba(255, 61, 198, 0.35);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.18);
+}
+
+.meeting-page .participant-game-mic {
+  border: 1px solid rgba(99, 241, 255, 0.24);
+  color: var(--mm-arcade-cyan);
+  background: rgba(2, 8, 22, 0.7);
+}
+
+.meeting-page .participant-game-mic.is-off,
+.meeting-page .control-button.is-off {
+  border-color: rgba(255, 61, 198, 0.42);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.15);
+}
+
+.meeting-page .participant-game-status-slot {
+  min-height: 28px;
+  border-top: 1px solid rgba(99, 241, 255, 0.12);
+}
+
+.meeting-page .participant-placeholder {
+  background: rgba(7, 18, 38, 0.92);
+}
+
+.meeting-page .participant-avatar {
+  border-color: rgba(99, 241, 255, 0.45);
+  color: var(--mm-arcade-text);
+  background: rgba(99, 241, 255, 0.14);
+  box-shadow: 0 0 14px rgba(99, 241, 255, 0.12);
+}
+
+.meeting-page .participant-camera-off-copy,
+.meeting-page .media-disconnected-notice {
+  color: var(--mm-arcade-text);
+}
+
+.meeting-page .media-disconnected-notice button {
+  color: #071226;
+  background: var(--mm-arcade-cyan);
+}
+
+.meeting-page .participant-waiting-slot {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(99, 241, 255, 0.28);
+  border-style: solid;
+  color: #bcd3e7;
+  background: rgba(7, 18, 38, 0.62);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.meeting-page .game-board {
+  position: relative;
+  border-color: rgba(99, 241, 255, 0.3);
+  border-radius: 14px;
+  color: var(--mm-arcade-text);
+  background: rgba(5, 10, 25, 0.98);
+  background-size: auto;
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.08) inset,
+    0 24px 72px rgba(0, 0, 0, 0.42),
+    0 0 18px rgba(99, 241, 255, 0.08);
+}
+
+.meeting-page .game-board-header {
+  border-bottom-color: rgba(99, 241, 255, 0.16);
+  background: rgba(4, 9, 24, 0.5);
+}
+
+.meeting-page .game-board-icon {
+  border: 1px solid rgba(99, 241, 255, 0.3);
+  color: var(--mm-arcade-cyan);
+  background: rgba(99, 241, 255, 0.1);
+  box-shadow: 0 0 14px rgba(99, 241, 255, 0.12);
+}
+
+.meeting-page .game-board-title strong {
+  color: var(--mm-arcade-text);
+  text-shadow: 0 0 10px rgba(99, 241, 255, 0.14);
+}
+
+.meeting-page .game-board-title p,
+.meeting-page .game-board-status small {
+  color: var(--mm-arcade-muted);
+}
+
+.meeting-page .game-board-phase {
+  border-color: rgba(255, 61, 198, 0.35);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.14);
+  box-shadow: 0 0 10px rgba(255, 61, 198, 0.08);
+}
+
+.meeting-page .game-chat-list {
+  scrollbar-color: rgba(99, 241, 255, 0.42) transparent;
+}
+
+.meeting-page .game-board-empty-state > span {
+  color: var(--mm-arcade-cyan);
+  background: rgba(99, 241, 255, 0.11);
+  box-shadow: 0 0 14px rgba(99, 241, 255, 0.1);
+}
+
+.meeting-page .game-board-empty-state strong {
+  color: var(--mm-arcade-text);
+}
+
+.meeting-page .game-board-empty-state p {
+  color: var(--mm-arcade-muted);
+}
+
+.meeting-page .chat-message {
+  border-color: rgba(99, 241, 255, 0.16);
+  color: var(--mm-arcade-text);
+  background: rgba(12, 25, 54, 0.78);
+}
+
+.meeting-page .chat-message.is-mine {
+  border-color: rgba(99, 241, 255, 0.32);
+  background: rgba(99, 241, 255, 0.12);
+}
+
+.meeting-page .chat-message.is-system {
+  border-color: rgba(255, 61, 198, 0.22);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.08);
+}
+
+.meeting-page .chat-message-meta strong {
+  color: var(--mm-arcade-text);
+}
+
+.meeting-page .chat-message-meta time,
+.meeting-page .chat-message p {
+  color: #bcd3e7;
+}
+
+.meeting-page .game-chat-composer {
+  border-color: rgba(99, 241, 255, 0.22);
+  background: rgba(2, 8, 22, 0.78);
+  box-shadow: 0 0 0 1px rgba(255, 61, 198, 0.08) inset;
+}
+
+.meeting-page .game-chat-composer textarea {
+  color: var(--mm-arcade-text);
+}
+
+.meeting-page .game-chat-composer textarea::placeholder {
+  color: #6f879e;
+}
+
+.meeting-page .game-chat-composer button,
+.meeting-page .control-button.is-active {
+  border-color: rgba(99, 241, 255, 0.48);
+  color: #06111f;
+  background: var(--mm-arcade-cyan);
+}
+
+.meeting-page .game-chat-feedback {
+  color: var(--mm-arcade-muted);
+}
+
+.meeting-page .meeting-controls {
+  border-color: rgba(99, 241, 255, 0.25);
+  background: rgba(4, 9, 24, 0.88);
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.06) inset,
+    0 18px 48px rgba(0, 0, 0, 0.36),
+    0 0 18px rgba(99, 241, 255, 0.05);
+}
+
+.meeting-page .control-button {
+  border: 1px solid rgba(99, 241, 255, 0.18);
+  color: var(--mm-arcade-cyan);
+  background: rgba(13, 27, 57, 0.86);
+}
+
+.meeting-page .control-button:hover {
+  color: var(--mm-arcade-text);
+  background: rgba(99, 241, 255, 0.14);
+}
+
+.meeting-page .control-button.leave {
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.18);
+}
+
+.meeting-page .control-button.leave:hover {
+  color: white;
+  background: rgba(255, 61, 198, 0.32);
+}
+
+.meeting-page .control-button-badge {
+  border-color: #071226;
+  background: var(--mm-arcade-magenta);
+}
+
+/* Step 5-C-3: remove tint overlays from real content surfaces. */
+.meeting-page .participant-game-card::before,
+.meeting-page .game-board::before,
+.meeting-page .participant-waiting-slot::before {
+  content: none;
+  display: none;
+}
+
+.meeting-page .participant-game-card,
+.meeting-page .participant-game-card .participant-video,
+.meeting-page .participant-game-card video {
+  opacity: 1;
+  filter: none;
+  mix-blend-mode: normal;
+}
+
+.meeting-page .participant-game-card .participant-card-shade {
+  display: none;
+}
+
+.meeting-page .participant-game-card {
+  background-color: #080d1a;
+}
+
+.meeting-page .game-board {
+  background: #080d1a;
+}
+
+.meeting-page .participant-placeholder,
+.meeting-page .participant-waiting-slot {
+  background: rgba(8, 13, 26, 0.82);
+}
+
+@media (max-width: 620px) and (orientation: portrait) {
+  .meeting-page .game-board-header {
+    gap: 8px;
+  }
+
+  .meeting-page .participant-game-status-slot {
+    min-height: 18px;
+  }
+}

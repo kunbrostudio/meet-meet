@@ -1,13 +1,26 @@
 import { Icon } from '../common/Icon'
-import type { GameBoardPhase } from './GameBoard'
+import type { GamePhase } from '../../types/game'
 
-const phaseLabels: Record<GameBoardPhase, string> = {
+const phaseLabels: Record<GamePhase, string> = {
   waiting: '대기 중',
-  countdown: '준비 중',
-  game: '게임 중',
+  ready: '준비 완료',
+  countdown: '카운트다운',
+  'attack-prep': '공격 준비',
+  attacking: '공격 중',
+  judging: '판정 중',
+  'turn-result': '턴 결과',
+  'game-result': '게임 결과',
 }
 
-export function GameBoardHeader({ phase }: { phase: GameBoardPhase }) {
+type GameBoardHeaderProps = {
+  phase: GamePhase
+  statusText?: string
+}
+
+export function GameBoardHeader({
+  phase,
+  statusText,
+}: GameBoardHeaderProps) {
   return (
     <header className="game-board-header">
       <div className="game-board-title">
@@ -19,7 +32,10 @@ export function GameBoardHeader({ phase }: { phase: GameBoardPhase }) {
           <p>웃참 공격전 준비 공간</p>
         </div>
       </div>
-      <span className="game-board-phase">{phaseLabels[phase]}</span>
+      <div className="game-board-status">
+        {statusText && <small>{statusText}</small>}
+        <span className="game-board-phase">{phaseLabels[phase]}</span>
+      </div>
     </header>
   )
 }

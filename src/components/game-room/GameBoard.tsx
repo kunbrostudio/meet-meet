@@ -1,15 +1,12 @@
 import type { ReactNode } from 'react'
 import type { ChatMessage } from '../../types/chat'
+import type { GamePhase } from '../../types/game'
 import { GameBoardHeader } from './GameBoardHeader'
 import { GameChatPanel } from './GameChatPanel'
 
-export type GameBoardPhase =
-  | 'waiting'
-  | 'countdown'
-  | 'game'
-
 type GameBoardProps = {
-  phase?: GameBoardPhase
+  phase?: GamePhase
+  statusText?: string
   chatMessages: ChatMessage[]
   localParticipantId?: number
   onSendChatMessage: (message: string) => void | Promise<void>
@@ -20,6 +17,7 @@ type GameBoardProps = {
 
 export function GameBoard({
   phase = 'waiting',
+  statusText,
   chatMessages,
   localParticipantId,
   onSendChatMessage,
@@ -29,7 +27,7 @@ export function GameBoard({
 }: GameBoardProps) {
   return (
     <section className="game-board" aria-label="GAME BOARD">
-      <GameBoardHeader phase={phase} />
+      <GameBoardHeader phase={phase} statusText={statusText} />
       {screenShareSlot && (
         <div className="game-board-screen-share">
           {screenShareSlot}

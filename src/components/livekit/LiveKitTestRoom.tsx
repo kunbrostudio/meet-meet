@@ -24,6 +24,7 @@ import {
   decodeLiveKitDataMessage,
   encodeLiveKitDataMessage,
   LIVEKIT_CHAT_TOPIC,
+  LIVEKIT_GAME_STATE_TOPIC,
   LIVEKIT_MEETING_CONTROL_TOPIC,
   LIVEKIT_TRANSCRIPT_TOPIC,
   LIVEKIT_TRANSLATION_TOPIC,
@@ -303,6 +304,15 @@ function LiveKitDataBridge({
           },
         )
       },
+      publishGameMessage: async (message) => {
+        await room.localParticipant.publishData(
+          encodeLiveKitDataMessage(message),
+          {
+            reliable: true,
+            topic: LIVEKIT_GAME_STATE_TOPIC,
+          },
+        )
+      },
     }
 
     const handleDataReceived = (
@@ -316,6 +326,7 @@ function LiveKitDataBridge({
         && topic !== LIVEKIT_TRANSCRIPT_TOPIC
         && topic !== LIVEKIT_TRANSLATION_TOPIC
         && topic !== LIVEKIT_MEETING_CONTROL_TOPIC
+        && topic !== LIVEKIT_GAME_STATE_TOPIC
       ) {
         return
       }
@@ -329,6 +340,9 @@ function LiveKitDataBridge({
           ? message?.type === 'transcript-created'
           : topic === LIVEKIT_TRANSLATION_TOPIC
           ? message?.type === 'translation'
+          : topic === LIVEKIT_GAME_STATE_TOPIC
+          ? message?.type === 'game-state-snapshot'
+            || message?.type === 'game-state-request'
           : message?.type === 'chat-message'
             || message?.type === 'system-message'
       )

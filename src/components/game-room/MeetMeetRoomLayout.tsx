@@ -1,11 +1,7 @@
 import type { ReactNode } from 'react'
 import type { Participant } from '../../types/participant'
 import { ParticipantColumn } from './ParticipantColumn'
-
-type ParticipantColumns = {
-  left: Participant[]
-  right: Participant[]
-}
+import { splitParticipantsForGameRoom } from './participantLayout'
 
 type MeetMeetRoomLayoutProps = {
   participants: Participant[]
@@ -13,26 +9,6 @@ type MeetMeetRoomLayoutProps = {
   selectedParticipantId?: number
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
-}
-
-export function splitParticipantsForGameRoom(
-  participants: Participant[],
-): ParticipantColumns {
-  const visibleParticipants = participants.slice(0, 4)
-
-  if (visibleParticipants.length <= 1) {
-    return {
-      left: visibleParticipants,
-      right: [],
-    }
-  }
-
-  const leftCount = visibleParticipants.length <= 3 ? 1 : 2
-
-  return {
-    left: visibleParticipants.slice(0, leftCount),
-    right: visibleParticipants.slice(leftCount),
-  }
 }
 
 export function MeetMeetRoomLayout({

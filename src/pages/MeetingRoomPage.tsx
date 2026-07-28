@@ -20,6 +20,7 @@ import { MeetingSettingsPanel } from '../components/meeting/MeetingSettingsPanel
 import { ParticipantsPanel } from '../components/meeting/ParticipantsPanel'
 import { RemoveParticipantModal } from '../components/meeting/RemoveParticipantModal'
 import type { Participant } from '../types/participant'
+import type { GameStateSnapshot } from '../types/game'
 import type {
   LanguageCode,
   SpeechRecognitionLanguage,
@@ -73,6 +74,11 @@ import {
   loadChatMessages,
   saveChatMessages,
 } from '../services/chatService'
+import {
+  createGameStateRequest,
+  createGameStateSnapshot,
+  shouldAcceptGameStateSnapshot,
+} from '../services/gameStateService'
 import {
   createManualTranslation,
   dedupeTranslations,
@@ -261,6 +267,7 @@ export function MeetingRoomPage({
   const [liveKitScreenShare, setLiveKitScreenShare] =
     useState<LiveKitScreenShare | null>(null)
   const [isLiveKitConnecting, setIsLiveKitConnecting] = useState(false)
+  const [isLiveKitDataReady, setIsLiveKitDataReady] = useState(false)
   const [liveKitMessage, setLiveKitMessage] = useState('')
   const [wasRemovedFromMeeting, setWasRemovedFromMeeting] = useState(false)
   const [isMeetingEndedRemotely, setIsMeetingEndedRemotely] = useState(false)
@@ -283,6 +290,19 @@ export function MeetingRoomPage({
         ]
       : participants.slice(0, participantCount)
   })
+  const [gameState, setGameState] = useState<GameStateSnapshot>(() => (
+    createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: roomParticipants,
+      previousRevision: 0,
+      hostParticipantIdentity:
+        initialLocalParticipant?.meetingRole === 'host'
+          ? initialLocalParticipant.liveKitIdentity
+          : undefined,
+    })
+  ))
   const copyMessageTimerRef = useRef<number | null>(null)
   const captionButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarChatButtonRef = useRef<HTMLButtonElement>(null)
@@ -304,6 +324,10 @@ export function MeetingRoomPage({
   const meetingExitInProgressRef = useRef(false)
   const meetingSessionSaveTimerRef = useRef<number | null>(null)
   const meetingSessionSnapshotRef = useRef('')
+  const gameStateRef = useRef(gameState)
+  const gameStateSnapshotKeyRef = useRef('')
+  const publishedGameStateSnapshotRef = useRef('')
+  const requestedGameStateRef = useRef(false)
   const liveKitParticipantsSnapshotRef = useRef('')
   const lastNoSpeechMessageAtRef = useRef(0)
   const speechRecognitionEnabledRef = useRef(false)
@@ -324,6 +348,10 @@ export function MeetingRoomPage({
     speechRecognitionEnabledRef.current = enabled
     setSttEnabled(enabled)
   }
+
+  useEffect(() => {
+    gameStateRef.current = gameState
+  }, [gameState])
 
   useEffect(() => {
     return () => {
@@ -1458,6 +1486,7 @@ export function MeetingRoomPage({
     setLiveKitMessage('방장에 의해 방에서 퇴장되었습니다.')
     setIsLiveKitConnecting(false)
     setIsLiveKitConnected(false)
+    setIsLiveKitDataReady(false)
     setLiveKitConnection(null)
     setLiveKitScreenShare(null)
     setLiveKitParticipants([])
@@ -1740,10 +1769,140 @@ export function MeetingRoomPage({
 
   const isCurrentUserHost =
     (displayedLocalParticipant ?? localParticipant)?.meetingRole === 'host'
+  const localParticipantIdentity =
+    displayedLocalParticipant?.liveKitIdentity
+    ?? liveKitConnection?.participantIdentity
+    ?? (
+      displayedLocalParticipant
+        ? String(displayedLocalParticipant.id)
+        : undefined
+    )
+  const gameStatusText =
+    `${gameState.connectedParticipantCount}/${gameState.participantCount}명`
   const connectionLoadingTitle =
     liveKitConnectionPhase === 'connected' && liveKitParticipants.length === 0
       ? '참가자 정보를 불러오는 중입니다...'
       : '방에 연결 중입니다...'
+
+  const createCurrentGameStateSnapshot = useCallback(() => (
+    createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: gameStateRef.current.revision,
+      hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
+    })
+  ), [
+    displayedParticipants,
+    meetingId,
+    participantCount,
+    roomCode,
+  ])
+
+  const publishGameStateSnapshot = useCallback(async (
+    snapshot: GameStateSnapshot,
+  ) => {
+    const controller = liveKitDataControllerRef.current
+
+    if (!controller || !isLiveKitConnected) {
+      return
+    }
+
+    await controller.publishGameMessage({
+      type: 'game-state-snapshot',
+      payload: snapshot,
+    }).catch((error) => {
+      console.warn('[livekit-game] Failed to publish game state snapshot', error)
+    })
+  }, [isLiveKitConnected])
+
+  const publishGameStateRequest = useCallback(async () => {
+    const controller = liveKitDataControllerRef.current
+
+    if (!controller || !isLiveKitConnected || isCurrentUserHost) {
+      return
+    }
+
+    await controller.publishGameMessage({
+      type: 'game-state-request',
+      payload: createGameStateRequest({
+        meetingId,
+        roomCode,
+        requesterParticipantIdentity: localParticipantIdentity,
+      }),
+    }).catch((error) => {
+      console.warn('[livekit-game] Failed to request game state', error)
+    })
+  }, [
+    isCurrentUserHost,
+    isLiveKitConnected,
+    localParticipantIdentity,
+    meetingId,
+    roomCode,
+  ])
+
+  useEffect(() => {
+    if (!isCurrentUserHost || wasRemovedFromMeeting) {
+      return
+    }
+
+    const nextSnapshot = createCurrentGameStateSnapshot()
+    const snapshotKey = JSON.stringify({
+      phase: nextSnapshot.phase,
+      participantCount: nextSnapshot.participantCount,
+      connectedParticipantCount: nextSnapshot.connectedParticipantCount,
+      participants: nextSnapshot.participants.map((participant) => [
+        participant.participantIdentity,
+        participant.name,
+        participant.role,
+        participant.isConnected,
+      ]),
+    })
+
+    if (snapshotKey !== gameStateSnapshotKeyRef.current) {
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+    }
+
+    if (
+      !isLiveKitConnected
+      || !isLiveKitDataReady
+      || snapshotKey === publishedGameStateSnapshotRef.current
+    ) {
+      return
+    }
+
+    publishedGameStateSnapshotRef.current = snapshotKey
+    void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    createCurrentGameStateSnapshot,
+    isCurrentUserHost,
+    isLiveKitConnected,
+    isLiveKitDataReady,
+    publishGameStateSnapshot,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (!isLiveKitConnected || !isLiveKitDataReady) {
+      requestedGameStateRef.current = false
+      return
+    }
+
+    if (isCurrentUserHost || requestedGameStateRef.current) {
+      return
+    }
+
+    requestedGameStateRef.current = true
+    void publishGameStateRequest()
+  }, [
+    isCurrentUserHost,
+    isLiveKitDataReady,
+    isLiveKitConnected,
+    publishGameStateRequest,
+  ])
 
   const openConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
     setIsScreenShareExpanded(false)
@@ -2087,6 +2246,34 @@ export function MeetingRoomPage({
         return
       }
 
+      if (message.type === 'game-state-snapshot') {
+        if (
+          !isCurrentUserHost
+          && shouldAcceptGameStateSnapshot(
+            gameStateRef.current,
+            message.payload,
+          )
+        ) {
+          gameStateRef.current = message.payload
+          setGameState(message.payload)
+        }
+        return
+      }
+
+      if (message.type === 'game-state-request') {
+        if (
+          isCurrentUserHost
+          && message.payload.meetingId === meetingId
+          && message.payload.roomCode === roomCode
+        ) {
+          const nextSnapshot = createCurrentGameStateSnapshot()
+          gameStateRef.current = nextSnapshot
+          setGameState(nextSnapshot)
+          void publishGameStateSnapshot(nextSnapshot)
+        }
+        return
+      }
+
       if (message.type === 'transcript-created') {
         // TODO: Translate the received sourceText again for each receiver's
         // targetLanguage when per-user translation is introduced.
@@ -2194,9 +2381,13 @@ export function MeetingRoomPage({
       displayedLocalParticipant,
       displayedParticipants,
       finalizeMeetingAndNavigate,
+      createCurrentGameStateSnapshot,
+      isCurrentUserHost,
       liveKitConnection?.participantIdentity,
       markParticipantKicked,
       meetingId,
+      publishGameStateSnapshot,
+      roomCode,
       targetLanguage,
     ],
   )
@@ -2435,7 +2626,8 @@ export function MeetingRoomPage({
                   onReconnectMedia={onReconnectMedia}
                   board={(
                     <GameBoard
-                      phase="waiting"
+                      phase={gameState.phase}
+                      statusText={gameStatusText}
                       chatMessages={chatMessages}
                       localParticipantId={
                         displayedLocalParticipant?.id ?? localParticipant?.id
@@ -2579,6 +2771,7 @@ export function MeetingRoomPage({
             }}
             onDataControllerChange={(controller) => {
               liveKitDataControllerRef.current = controller
+              setIsLiveKitDataReady(Boolean(controller))
             }}
             onDataMessage={receiveLiveKitDataMessage}
             onConnectionError={() => {
@@ -2598,6 +2791,7 @@ export function MeetingRoomPage({
             onDisconnect={() => {
               liveKitMediaControllerRef.current = null
               liveKitDataControllerRef.current = null
+              setIsLiveKitDataReady(false)
               setIsLiveKitConnected(false)
               liveKitConnectedRoomRef.current = null
               liveKitConnectingRoomRef.current = null

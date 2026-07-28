@@ -5956,6 +5956,20 @@
   font-weight: 900;
 }
 
+.game-board-status {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.game-board-status small {
+  color: #7d899d;
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .game-board-screen-share {
   flex: 0 0 auto;
   padding: 12px 14px 0;

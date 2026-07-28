@@ -1,5 +1,9 @@
 import type { ChatMessage } from '../types/chat'
 import type {
+  GameStateRequest,
+  GameStateSnapshot,
+} from '../types/game'
+import type {
   LanguageCode,
   SpeechRecognitionLanguage,
   SupportedLanguage,
@@ -11,6 +15,7 @@ export const LIVEKIT_CHAT_TOPIC = 'meet-meet-chat'
 export const LIVEKIT_TRANSCRIPT_TOPIC = 'meet-meet-transcript'
 export const LIVEKIT_TRANSLATION_TOPIC = 'meet-meet-translation'
 export const LIVEKIT_MEETING_CONTROL_TOPIC = 'meet-meet-room-control'
+export const LIVEKIT_GAME_STATE_TOPIC = 'meet-meet-game-state'
 
 export type LiveKitChatSenderRole = 'host' | 'guest' | 'system'
 
@@ -83,6 +88,14 @@ export type LiveKitDataMessage =
   | {
       type: 'participant-kicked'
       payload: LiveKitParticipantKickedPayload
+    }
+  | {
+      type: 'game-state-snapshot'
+      payload: GameStateSnapshot
+    }
+  | {
+      type: 'game-state-request'
+      payload: GameStateRequest
     }
 
 const encoder = new TextEncoder()
@@ -239,12 +252,18 @@ export function decodeLiveKitDataMessage(
         && message.type !== 'translation'
         && message.type !== 'meeting-ended'
         && message.type !== 'participant-kicked'
+        && message.type !== 'game-state-snapshot'
+        && message.type !== 'game-state-request'
       )
       || (
         message.type === 'meeting-ended'
           ? !isMeetingEndedPayload(message.payload)
           : message.type === 'participant-kicked'
             ? !isParticipantKickedPayload(message.payload)
+          : message.type === 'game-state-snapshot'
+            ? !isGameStateSnapshot(message.payload)
+          : message.type === 'game-state-request'
+            ? !isGameStateRequest(message.payload)
           : message.type === 'transcript-created'
             ? !isLiveKitTranscriptPayload(message.payload)
               && !isTranscript(message.payload)
@@ -435,6 +454,78 @@ function isMeetingEndedPayload(
     && typeof payload.endedByParticipantIdentity === 'string'
     && typeof payload.endedByName === 'string'
     && typeof payload.endedAt === 'string'
+  )
+}
+
+function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const snapshot = value as Partial<GameStateSnapshot>
+  return (
+    snapshot.type === 'game-state-snapshot'
+    && typeof snapshot.meetingId === 'string'
+    && typeof snapshot.roomCode === 'string'
+    && isGamePhase(snapshot.phase)
+    && typeof snapshot.revision === 'number'
+    && Number.isFinite(snapshot.revision)
+    && typeof snapshot.participantCount === 'number'
+    && Number.isFinite(snapshot.participantCount)
+    && typeof snapshot.connectedParticipantCount === 'number'
+    && Number.isFinite(snapshot.connectedParticipantCount)
+    && (
+      snapshot.hostParticipantIdentity === undefined
+      || typeof snapshot.hostParticipantIdentity === 'string'
+    )
+    && Array.isArray(snapshot.participants)
+    && snapshot.participants.every((participant) => (
+      typeof participant === 'object'
+      && participant !== null
+      && typeof participant.participantId === 'number'
+      && (
+        participant.participantIdentity === undefined
+        || typeof participant.participantIdentity === 'string'
+      )
+      && typeof participant.name === 'string'
+      && (
+        participant.role === 'host'
+        || participant.role === 'participant'
+      )
+      && typeof participant.isConnected === 'boolean'
+    ))
+    && typeof snapshot.updatedAt === 'string'
+  )
+}
+
+function isGameStateRequest(value: unknown): value is GameStateRequest {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const request = value as Partial<GameStateRequest>
+  return (
+    request.type === 'game-state-request'
+    && typeof request.meetingId === 'string'
+    && typeof request.roomCode === 'string'
+    && (
+      request.requesterParticipantIdentity === undefined
+      || typeof request.requesterParticipantIdentity === 'string'
+    )
+    && typeof request.requestedAt === 'string'
+  )
+}
+
+function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
+  return (
+    value === 'waiting'
+    || value === 'ready'
+    || value === 'countdown'
+    || value === 'attack-prep'
+    || value === 'attacking'
+    || value === 'judging'
+    || value === 'turn-result'
+    || value === 'game-result'
   )
 }
 

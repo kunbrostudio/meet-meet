@@ -65,6 +65,9 @@ export type LiveKitDataController = {
   publishMeetingControlMessage: (
     message: import('./livekitChatService').LiveKitDataMessage,
   ) => Promise<void>
+  publishGameMessage: (
+    message: import('./livekitChatService').LiveKitDataMessage,
+  ) => Promise<void>
 }
 
 type LiveKitErrorResponse = {

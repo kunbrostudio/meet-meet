@@ -46,7 +46,10 @@ type LiveKitTestRoomProps = {
   onDataControllerChange: (
     controller: LiveKitDataController | null,
   ) => void
-  onDataMessage: (message: LiveKitDataMessage) => void
+  onDataMessage: (
+    message: LiveKitDataMessage,
+    senderParticipantIdentity?: string,
+  ) => void
   onConnectionError: (message: string) => void
   onRemovedFromMeeting: () => void
   onHide: () => void
@@ -124,8 +127,11 @@ export function LiveKitTestRoom({
     onDataControllerChangeRef.current(controller)
   }, [onDataControllerChangeRef])
 
-  const handleDataMessage = useCallback((message: LiveKitDataMessage) => {
-    onDataMessageRef.current(message)
+  const handleDataMessage = useCallback((
+    message: LiveKitDataMessage,
+    senderParticipantIdentity?: string,
+  ) => {
+    onDataMessageRef.current(message, senderParticipantIdentity)
   }, [onDataMessageRef])
 
   const handleParticipantsChange = useCallback((items: Participant[]) => {
@@ -262,7 +268,10 @@ function LiveKitDataBridge({
   onMessage,
 }: {
   onControllerChange: (controller: LiveKitDataController | null) => void
-  onMessage: (message: LiveKitDataMessage) => void
+  onMessage: (
+    message: LiveKitDataMessage,
+    senderParticipantIdentity?: string,
+  ) => void
 }) {
   const room = useRoomContext()
 
@@ -317,7 +326,7 @@ function LiveKitDataBridge({
 
     const handleDataReceived = (
       payload: Uint8Array,
-      _participant: RemoteParticipant | undefined,
+      participant: RemoteParticipant | undefined,
       _kind: unknown,
       topic?: string,
     ) => {
@@ -343,12 +352,13 @@ function LiveKitDataBridge({
           : topic === LIVEKIT_GAME_STATE_TOPIC
           ? message?.type === 'game-state-snapshot'
             || message?.type === 'game-state-request'
+            || message?.type === 'game-ready-change'
           : message?.type === 'chat-message'
             || message?.type === 'system-message'
       )
 
       if (message && matchesTopic) {
-        onMessage(message)
+        onMessage(message, participant?.identity)
       }
     }
 

@@ -1,10 +1,12 @@
 import type { Participant } from '../../types/participant'
+import { getParticipantGameIdentity } from '../../services/gameStateService'
 import { ParticipantGameCard } from './ParticipantGameCard'
 
 type ParticipantColumnProps = {
   side: 'left' | 'right'
   participants: Participant[]
   selectedParticipantId?: number
+  readyParticipantIdentities?: string[]
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -13,9 +15,12 @@ export function ParticipantColumn({
   side,
   participants,
   selectedParticipantId,
+  readyParticipantIdentities = [],
   onSelectParticipant,
   onReconnectMedia,
 }: ParticipantColumnProps) {
+  const readyIdentitySet = new Set(readyParticipantIdentities)
+
   return (
     <aside
       className={`participant-column is-${side}`}
@@ -28,6 +33,7 @@ export function ParticipantColumn({
         <ParticipantGameCard
           participant={participant}
           selected={participant.id === selectedParticipantId}
+          isReady={readyIdentitySet.has(getParticipantGameIdentity(participant))}
           onSelect={
             onSelectParticipant
               ? () => onSelectParticipant(participant.id)

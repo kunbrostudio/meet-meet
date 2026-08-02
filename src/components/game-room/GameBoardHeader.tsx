@@ -5,6 +5,7 @@ const phaseLabels: Record<GamePhase, string> = {
   waiting: '대기 중',
   ready: '준비 완료',
   countdown: '카운트다운',
+  'game-started': '게임 시작',
   'attack-prep': '공격 준비',
   attacking: '공격 중',
   judging: '판정 중',

@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types/chat'
 import type {
+  GameReadyChange,
   GameStateRequest,
   GameStateSnapshot,
 } from '../types/game'
@@ -96,6 +97,10 @@ export type LiveKitDataMessage =
   | {
       type: 'game-state-request'
       payload: GameStateRequest
+    }
+  | {
+      type: 'game-ready-change'
+      payload: GameReadyChange
     }
 
 const encoder = new TextEncoder()
@@ -254,6 +259,7 @@ export function decodeLiveKitDataMessage(
         && message.type !== 'participant-kicked'
         && message.type !== 'game-state-snapshot'
         && message.type !== 'game-state-request'
+        && message.type !== 'game-ready-change'
       )
       || (
         message.type === 'meeting-ended'
@@ -264,6 +270,8 @@ export function decodeLiveKitDataMessage(
             ? !isGameStateSnapshot(message.payload)
           : message.type === 'game-state-request'
             ? !isGameStateRequest(message.payload)
+          : message.type === 'game-ready-change'
+            ? !isGameReadyChange(message.payload)
           : message.type === 'transcript-created'
             ? !isLiveKitTranscriptPayload(message.payload)
               && !isTranscript(message.payload)
@@ -474,6 +482,19 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
     && Number.isFinite(snapshot.participantCount)
     && typeof snapshot.connectedParticipantCount === 'number'
     && Number.isFinite(snapshot.connectedParticipantCount)
+    && typeof snapshot.readyParticipantCount === 'number'
+    && Number.isFinite(snapshot.readyParticipantCount)
+    && (
+      snapshot.countdownStartedAt === undefined
+      || typeof snapshot.countdownStartedAt === 'string'
+    )
+    && (
+      snapshot.countdownDurationMs === undefined
+      || (
+        typeof snapshot.countdownDurationMs === 'number'
+        && Number.isFinite(snapshot.countdownDurationMs)
+      )
+    )
     && (
       snapshot.hostParticipantIdentity === undefined
       || typeof snapshot.hostParticipantIdentity === 'string'
@@ -493,6 +514,7 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
         || participant.role === 'participant'
       )
       && typeof participant.isConnected === 'boolean'
+      && typeof participant.isReady === 'boolean'
     ))
     && typeof snapshot.updatedAt === 'string'
   )
@@ -516,11 +538,28 @@ function isGameStateRequest(value: unknown): value is GameStateRequest {
   )
 }
 
+function isGameReadyChange(value: unknown): value is GameReadyChange {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const readyChange = value as Partial<GameReadyChange>
+  return (
+    readyChange.type === 'game-ready-change'
+    && typeof readyChange.meetingId === 'string'
+    && typeof readyChange.roomCode === 'string'
+    && typeof readyChange.participantIdentity === 'string'
+    && typeof readyChange.isReady === 'boolean'
+    && typeof readyChange.changedAt === 'string'
+  )
+}
+
 function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
   return (
     value === 'waiting'
     || value === 'ready'
     || value === 'countdown'
+    || value === 'game-started'
     || value === 'attack-prep'
     || value === 'attacking'
     || value === 'judging'

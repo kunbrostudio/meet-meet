@@ -2,6 +2,7 @@ export type GamePhase =
   | 'waiting'
   | 'ready'
   | 'countdown'
+  | 'game-started'
   | 'attack-prep'
   | 'attacking'
   | 'judging'
@@ -14,6 +15,7 @@ export type GameParticipantStatus = {
   name: string
   role: 'host' | 'participant'
   isConnected: boolean
+  isReady: boolean
 }
 
 export type GameStateSnapshot = {
@@ -24,6 +26,9 @@ export type GameStateSnapshot = {
   revision: number
   participantCount: number
   connectedParticipantCount: number
+  readyParticipantCount: number
+  countdownStartedAt?: string
+  countdownDurationMs?: number
   hostParticipantIdentity?: string
   participants: GameParticipantStatus[]
   updatedAt: string
@@ -35,4 +40,13 @@ export type GameStateRequest = {
   roomCode: string
   requesterParticipantIdentity?: string
   requestedAt: string
+}
+
+export type GameReadyChange = {
+  type: 'game-ready-change'
+  meetingId: string
+  roomCode: string
+  participantIdentity: string
+  isReady: boolean
+  changedAt: string
 }

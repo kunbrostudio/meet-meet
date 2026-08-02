@@ -75,8 +75,11 @@ import {
   saveChatMessages,
 } from '../services/chatService'
 import {
+  createGameReadyChange,
   createGameStateRequest,
   createGameStateSnapshot,
+  filterReadyParticipantIdentities,
+  getParticipantGameIdentity,
   shouldAcceptGameStateSnapshot,
 } from '../services/gameStateService'
 import {
@@ -120,6 +123,8 @@ const LiveKitTestRoom = lazy(
     (module) => ({ default: module.LiveKitTestRoom }),
   ),
 )
+
+const GAME_COUNTDOWN_DURATION_MS = 3000
 
 type MeetingRoomPageProps = {
   meetingId: string
@@ -303,6 +308,7 @@ export function MeetingRoomPage({
           : undefined,
     })
   ))
+  const [readyParticipantIdentities, setReadyParticipantIdentities] = useState<string[]>([])
   const copyMessageTimerRef = useRef<number | null>(null)
   const captionButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarChatButtonRef = useRef<HTMLButtonElement>(null)
@@ -315,6 +321,7 @@ export function MeetingRoomPage({
   const autoStartInProgressRef = useRef(false)
   const captionRestartTimerRef = useRef<number | null>(null)
   const liveCaptionClearTimerRef = useRef<number | null>(null)
+  const countdownCompletionTimerRef = useRef<number | null>(null)
   const screenShareStreamRef = useRef<MediaStream | null>(null)
   const liveKitMediaControllerRef =
     useRef<LiveKitMediaController | null>(null)
@@ -325,6 +332,7 @@ export function MeetingRoomPage({
   const meetingSessionSaveTimerRef = useRef<number | null>(null)
   const meetingSessionSnapshotRef = useRef('')
   const gameStateRef = useRef(gameState)
+  const readyParticipantIdentitiesRef = useRef(readyParticipantIdentities)
   const gameStateSnapshotKeyRef = useRef('')
   const publishedGameStateSnapshotRef = useRef('')
   const requestedGameStateRef = useRef(false)
@@ -354,6 +362,10 @@ export function MeetingRoomPage({
   }, [gameState])
 
   useEffect(() => {
+    readyParticipantIdentitiesRef.current = readyParticipantIdentities
+  }, [readyParticipantIdentities])
+
+  useEffect(() => {
     return () => {
       speechRecognitionEnabledRef.current = false
       stopSpeechRecognition()
@@ -366,6 +378,9 @@ export function MeetingRoomPage({
       }
       if (liveCaptionClearTimerRef.current !== null) {
         window.clearTimeout(liveCaptionClearTimerRef.current)
+      }
+      if (countdownCompletionTimerRef.current !== null) {
+        window.clearTimeout(countdownCompletionTimerRef.current)
       }
       if (meetingSessionSaveTimerRef.current !== null) {
         window.clearTimeout(meetingSessionSaveTimerRef.current)
@@ -1709,6 +1724,19 @@ export function MeetingRoomPage({
     (participant) => participant.role === 'local',
   )
 
+  const activeReadyParticipantIdentities = useMemo(
+    () => filterReadyParticipantIdentities(
+      displayedParticipants,
+      readyParticipantIdentities,
+    ),
+    [displayedParticipants, readyParticipantIdentities],
+  )
+
+  useEffect(() => {
+    readyParticipantIdentitiesRef.current = activeReadyParticipantIdentities
+  }, [activeReadyParticipantIdentities])
+
+
   useEffect(() => {
     if (displayedParticipants.length === 0) {
       return
@@ -1779,6 +1807,20 @@ export function MeetingRoomPage({
     )
   const gameStatusText =
     `${gameState.connectedParticipantCount}/${gameState.participantCount}명`
+  const readyStatusText =
+    `${gameState.readyParticipantCount} / ${Math.max(2, gameState.connectedParticipantCount)} READY`
+  const isLocalParticipantReady = localParticipantIdentity
+    ? activeReadyParticipantIdentities.includes(localParticipantIdentity)
+    : false
+  const canToggleReady =
+    Boolean(localParticipantIdentity)
+    && isLiveKitDataReady
+    && (gameState.phase === 'waiting' || gameState.phase === 'ready')
+  const canStartGame =
+    isCurrentUserHost
+    && gameState.phase === 'ready'
+    && gameState.connectedParticipantCount >= 2
+    && gameState.readyParticipantCount === gameState.connectedParticipantCount
   const connectionLoadingTitle =
     liveKitConnectionPhase === 'connected' && liveKitParticipants.length === 0
       ? '참가자 정보를 불러오는 중입니다...'
@@ -1792,9 +1834,18 @@ export function MeetingRoomPage({
       participants: displayedParticipants,
       previousRevision: gameStateRef.current.revision,
       hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
+      readyParticipantIdentities: activeReadyParticipantIdentities,
+      phase:
+        gameStateRef.current.phase === 'countdown'
+          || gameStateRef.current.phase === 'game-started'
+          ? gameStateRef.current.phase
+          : undefined,
+      countdownStartedAt: gameStateRef.current.countdownStartedAt,
+      countdownDurationMs: gameStateRef.current.countdownDurationMs,
     })
   ), [
     displayedParticipants,
+    activeReadyParticipantIdentities,
     meetingId,
     participantCount,
     roomCode,
@@ -1842,6 +1893,114 @@ export function MeetingRoomPage({
     roomCode,
   ])
 
+  const handleToggleReady = useCallback(() => {
+    if (
+      !localParticipantIdentity
+      || !(gameStateRef.current.phase === 'waiting' || gameStateRef.current.phase === 'ready')
+    ) {
+      return
+    }
+
+    const nextIsReady =
+      !readyParticipantIdentitiesRef.current.includes(localParticipantIdentity)
+
+    setReadyParticipantIdentities((current) => {
+      const currentSet = new Set(current)
+
+      if (nextIsReady) {
+        currentSet.add(localParticipantIdentity)
+      } else {
+        currentSet.delete(localParticipantIdentity)
+      }
+
+      return Array.from(currentSet)
+    })
+
+    if (isCurrentUserHost) {
+      return
+    }
+
+    const controller = liveKitDataControllerRef.current
+
+    if (!controller || !isLiveKitConnected || !isLiveKitDataReady) {
+      return
+    }
+
+    void controller.publishGameMessage({
+      type: 'game-ready-change',
+      payload: createGameReadyChange({
+        meetingId,
+        roomCode,
+        participantIdentity: localParticipantIdentity,
+        isReady: nextIsReady,
+      }),
+    }).catch((error) => {
+      console.warn('[livekit-game] Failed to publish ready state', error)
+    })
+  }, [
+    isCurrentUserHost,
+    isLiveKitConnected,
+    isLiveKitDataReady,
+    localParticipantIdentity,
+    meetingId,
+    roomCode,
+  ])
+
+  const handleStartGame = useCallback(() => {
+    if (
+      !isCurrentUserHost
+      || gameStateRef.current.phase !== 'ready'
+      || gameStateRef.current.connectedParticipantCount < 2
+      || gameStateRef.current.readyParticipantCount
+        !== gameStateRef.current.connectedParticipantCount
+    ) {
+      return
+    }
+
+    const nextSnapshot = createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: gameStateRef.current.revision,
+      hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
+      readyParticipantIdentities: activeReadyParticipantIdentities,
+      phase: 'countdown',
+      countdownStartedAt: new Date().toISOString(),
+      countdownDurationMs: GAME_COUNTDOWN_DURATION_MS,
+    })
+
+    const snapshotKey = JSON.stringify({
+      phase: nextSnapshot.phase,
+      countdownStartedAt: nextSnapshot.countdownStartedAt,
+      countdownDurationMs: nextSnapshot.countdownDurationMs,
+      participantCount: nextSnapshot.participantCount,
+      connectedParticipantCount: nextSnapshot.connectedParticipantCount,
+      readyParticipantCount: nextSnapshot.readyParticipantCount,
+      participants: nextSnapshot.participants.map((participant) => [
+        participant.participantIdentity,
+        participant.name,
+        participant.role,
+        participant.isConnected,
+        participant.isReady,
+      ]),
+    })
+
+    gameStateSnapshotKeyRef.current = snapshotKey
+    gameStateRef.current = nextSnapshot
+    setGameState(nextSnapshot)
+    publishedGameStateSnapshotRef.current = snapshotKey
+    void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+  ])
+
   useEffect(() => {
     if (!isCurrentUserHost || wasRemovedFromMeeting) {
       return
@@ -1850,13 +2009,17 @@ export function MeetingRoomPage({
     const nextSnapshot = createCurrentGameStateSnapshot()
     const snapshotKey = JSON.stringify({
       phase: nextSnapshot.phase,
+      countdownStartedAt: nextSnapshot.countdownStartedAt,
+      countdownDurationMs: nextSnapshot.countdownDurationMs,
       participantCount: nextSnapshot.participantCount,
       connectedParticipantCount: nextSnapshot.connectedParticipantCount,
+      readyParticipantCount: nextSnapshot.readyParticipantCount,
       participants: nextSnapshot.participants.map((participant) => [
         participant.participantIdentity,
         participant.name,
         participant.role,
         participant.isConnected,
+        participant.isReady,
       ]),
     })
 
@@ -1882,7 +2045,98 @@ export function MeetingRoomPage({
     isLiveKitConnected,
     isLiveKitDataReady,
     publishGameStateSnapshot,
+    activeReadyParticipantIdentities,
     wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (countdownCompletionTimerRef.current !== null) {
+      window.clearTimeout(countdownCompletionTimerRef.current)
+      countdownCompletionTimerRef.current = null
+    }
+
+    if (
+      !isCurrentUserHost
+      || gameState.phase !== 'countdown'
+      || !gameState.countdownStartedAt
+    ) {
+      return
+    }
+
+    const countdownStartedAtMs = Date.parse(gameState.countdownStartedAt)
+
+    if (!Number.isFinite(countdownStartedAtMs)) {
+      return
+    }
+
+    const countdownDurationMs =
+      gameState.countdownDurationMs ?? GAME_COUNTDOWN_DURATION_MS
+    const countdownEndsAt = countdownStartedAtMs + countdownDurationMs
+    const delayMs = Math.max(0, countdownEndsAt - Date.now())
+
+    countdownCompletionTimerRef.current = window.setTimeout(() => {
+      const currentGameState = gameStateRef.current
+
+      if (
+        currentGameState.phase !== 'countdown'
+        || currentGameState.countdownStartedAt !== gameState.countdownStartedAt
+      ) {
+        return
+      }
+
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: currentGameState.revision,
+        hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+        phase: 'game-started',
+        countdownStartedAt: currentGameState.countdownStartedAt,
+        countdownDurationMs: currentGameState.countdownDurationMs,
+      })
+      const snapshotKey = JSON.stringify({
+        phase: nextSnapshot.phase,
+        countdownStartedAt: nextSnapshot.countdownStartedAt,
+        countdownDurationMs: nextSnapshot.countdownDurationMs,
+        participantCount: nextSnapshot.participantCount,
+        connectedParticipantCount: nextSnapshot.connectedParticipantCount,
+        readyParticipantCount: nextSnapshot.readyParticipantCount,
+        participants: nextSnapshot.participants.map((participant) => [
+          participant.participantIdentity,
+          participant.name,
+          participant.role,
+          participant.isConnected,
+          participant.isReady,
+        ]),
+      })
+
+      countdownCompletionTimerRef.current = null
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+    }, delayMs)
+
+    return () => {
+      if (countdownCompletionTimerRef.current !== null) {
+        window.clearTimeout(countdownCompletionTimerRef.current)
+        countdownCompletionTimerRef.current = null
+      }
+    }
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    gameState.countdownDurationMs,
+    gameState.countdownStartedAt,
+    gameState.phase,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
   ])
 
   useEffect(() => {
@@ -2213,7 +2467,10 @@ export function MeetingRoomPage({
   }
 
   const receiveLiveKitDataMessage = useCallback(
-    (message: LiveKitDataMessage) => {
+    (
+      message: LiveKitDataMessage,
+      senderParticipantIdentity?: string,
+    ) => {
       if (message.type === 'participant-kicked') {
         const localIdentity =
           displayedLocalParticipant?.liveKitIdentity
@@ -2247,16 +2504,72 @@ export function MeetingRoomPage({
       }
 
       if (message.type === 'game-state-snapshot') {
+        const expectedHostIdentity =
+          gameStateRef.current.hostParticipantIdentity
+          ?? displayedParticipants.find(
+            (participant) => participant.meetingRole === 'host',
+          )?.liveKitIdentity
+          ?? displayedParticipants.find(
+            (participant) => participant.meetingRole === 'host',
+          )?.id.toString()
+
         if (
           !isCurrentUserHost
+          && (
+            !expectedHostIdentity
+            || message.payload.hostParticipantIdentity === expectedHostIdentity
+          )
+          && (
+            !expectedHostIdentity
+            || senderParticipantIdentity === expectedHostIdentity
+          )
           && shouldAcceptGameStateSnapshot(
             gameStateRef.current,
             message.payload,
           )
         ) {
           gameStateRef.current = message.payload
+          setReadyParticipantIdentities(
+            message.payload.participants
+              .filter((participant) => participant.isReady)
+              .map((participant) => participant.participantIdentity)
+              .filter((participantIdentity): participantIdentity is string => (
+                typeof participantIdentity === 'string'
+              )),
+          )
           setGameState(message.payload)
         }
+        return
+      }
+
+      if (message.type === 'game-ready-change') {
+        if (
+          !isCurrentUserHost
+          || message.payload.meetingId !== meetingId
+          || message.payload.roomCode !== roomCode
+          || !displayedParticipants.some(
+            (participant) => (
+              getParticipantGameIdentity(participant)
+                === message.payload.participantIdentity
+            ),
+          )
+        ) {
+          return
+        }
+
+        setReadyParticipantIdentities((current) => {
+          const currentSet = new Set(
+            filterReadyParticipantIdentities(displayedParticipants, current),
+          )
+
+          if (message.payload.isReady) {
+            currentSet.add(message.payload.participantIdentity)
+          } else {
+            currentSet.delete(message.payload.participantIdentity)
+          }
+
+          return Array.from(currentSet)
+        })
         return
       }
 
@@ -2619,6 +2932,7 @@ export function MeetingRoomPage({
                 <MeetMeetRoomLayout
                   participants={displayedParticipants}
                   selectedParticipantId={activeMainParticipantId}
+                  readyParticipantIdentities={activeReadyParticipantIdentities}
                   onSelectParticipant={(participantId) => {
                     setSelectedMainParticipantId(participantId)
                     setViewMode('focus')
@@ -2635,6 +2949,15 @@ export function MeetingRoomPage({
                       onSendChatMessage={sendChatMessage}
                       canSendChatMessage={canSendChatMessage}
                       chatSendMessage={chatSendMessage}
+                      countdownStartedAt={gameState.countdownStartedAt}
+                      countdownDurationMs={gameState.countdownDurationMs}
+                      readyStatusText={readyStatusText}
+                      isLocalReady={isLocalParticipantReady}
+                      canToggleReady={canToggleReady}
+                      isHost={isCurrentUserHost}
+                      canStartGame={canStartGame}
+                      onToggleReady={handleToggleReady}
+                      onStartGame={handleStartGame}
                       screenShareSlot={
                         activeScreenShareStream ? (
                           <ScreenShareCard

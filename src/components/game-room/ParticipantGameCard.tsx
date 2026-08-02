@@ -5,6 +5,7 @@ import { Icon } from '../common/Icon'
 type ParticipantGameCardProps = {
   participant: Participant
   selected?: boolean
+  isReady?: boolean
   onSelect?: () => void
   onReconnectMedia?: () => void
 }
@@ -59,6 +60,7 @@ const ParticipantVideo = memo(
 function ParticipantGameCardComponent({
   participant,
   selected = false,
+  isReady = false,
   onSelect,
   onReconnectMedia,
 }: ParticipantGameCardProps) {
@@ -132,7 +134,11 @@ function ParticipantGameCardComponent({
           <Icon name={participant.isMicOn ? 'mic' : 'mic-off'} size={13} />
         </span>
       </div>
-      <div className="participant-game-status-slot" aria-hidden="true" />
+      <div className="participant-game-status-slot" aria-hidden="true">
+        {isReady && (
+          <span className="participant-ready-badge">READY</span>
+        )}
+      </div>
     </article>
   )
 }
@@ -152,5 +158,6 @@ export const ParticipantGameCard = memo(
     && previous.participant.microphoneTrackSid === next.participant.microphoneTrackSid
     && previous.participant.microphoneTrackId === next.participant.microphoneTrackId
     && previous.selected === next.selected
+    && previous.isReady === next.isReady
   ),
 )

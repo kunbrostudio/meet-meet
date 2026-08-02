@@ -6480,6 +6480,19 @@
   border-top: 1px solid rgba(99, 241, 255, 0.12);
 }
 
+.meeting-page .participant-ready-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(99, 241, 255, 0.42);
+  border-radius: 999px;
+  color: #071226;
+  background: var(--mm-arcade-cyan);
+  font-size: 10px;
+  font-weight: 900;
+}
+
 .meeting-page .participant-placeholder {
   background: rgba(7, 18, 38, 0.92);
 }
@@ -6551,6 +6564,119 @@
   color: #ffd7f4;
   background: rgba(255, 61, 198, 0.14);
   box-shadow: 0 0 10px rgba(255, 61, 198, 0.08);
+}
+
+.meeting-page .game-board-ready-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 14px 0;
+  padding: 10px;
+  border: 1px solid rgba(99, 241, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(8, 17, 36, 0.78);
+}
+
+.meeting-page .game-ready-count {
+  color: var(--mm-arcade-text);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.meeting-page .game-ready-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.meeting-page .game-ready-button,
+.meeting-page .game-start-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(99, 241, 255, 0.28);
+  border-radius: 10px;
+  color: var(--mm-arcade-text);
+  background: rgba(12, 25, 54, 0.9);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.meeting-page .game-ready-button.is-ready {
+  border-color: rgba(99, 241, 255, 0.54);
+  color: #071226;
+  background: var(--mm-arcade-cyan);
+}
+
+.meeting-page .game-start-button {
+  border-color: rgba(255, 61, 198, 0.45);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.14);
+}
+
+.meeting-page .game-ready-button:disabled,
+.meeting-page .game-start-button:disabled {
+  cursor: not-allowed;
+  color: var(--mm-arcade-muted);
+  background: rgba(12, 25, 54, 0.46);
+  opacity: 1;
+}
+
+.meeting-page .game-countdown-panel {
+  display: grid;
+  align-items: center;
+  justify-content: center;
+  min-height: 118px;
+  width: 100%;
+  color: var(--mm-arcade-text);
+  font-weight: 900;
+  text-align: center;
+}
+
+.meeting-page .game-countdown-panel span {
+  color: var(--mm-arcade-text);
+  font-size: 72px;
+  line-height: 1;
+  text-shadow:
+    0 0 16px rgba(99, 241, 255, 0.28),
+    0 0 22px rgba(255, 61, 198, 0.14);
+  animation: countdown-pop 420ms ease-out;
+}
+
+.meeting-page .game-started-panel {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 92px;
+  color: var(--mm-arcade-text);
+  text-align: center;
+}
+
+.meeting-page .game-started-panel strong {
+  color: var(--mm-arcade-cyan);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.meeting-page .game-started-panel p {
+  margin: 0;
+  color: var(--mm-arcade-muted);
+  font-size: 12px;
+}
+
+@keyframes countdown-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .meeting-page .game-chat-list {

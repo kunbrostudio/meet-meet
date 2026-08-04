@@ -113,6 +113,23 @@ const freeBetaConfig = {
 }
 const sessionCookieName = 'meet_meet_sid'
 const roomCodeCharacters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const localFrontendOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174',
+  'http://localhost:4174',
+  'http://127.0.0.1:4174',
+]
+const configuredCorsOrigins =
+  (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+const allowedCorsOrigins = new Set([
+  ...localFrontendOrigins,
+  ...configuredCorsOrigins,
+])
 const anonymousSessions = new Map<string, AnonymousSession>()
 const freeBetaRooms = new Map<string, FreeBetaRoom>()
 const createRateBuckets = new Map<string, number[]>()
@@ -409,7 +426,14 @@ function validateHostControlToken(
 }
 
 app.use(cors({
-  origin: true,
+  origin(origin, callback) {
+    if (!origin || allowedCorsOrigins.has(origin)) {
+      callback(null, true)
+      return
+    }
+
+    callback(new Error(`CORS origin is not allowed: ${origin}`))
+  },
   credentials: true,
 }))
 app.use(express.json({ limit: '32kb' }))

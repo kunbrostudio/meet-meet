@@ -50,6 +50,7 @@ OPENAI_API_KEY=
 OPENAI_TRANSLATION_MODEL=gpt-5-mini
 TRANSLATION_SERVER_PORT=8787
 VITE_API_BASE_URL=
+CORS_ALLOWED_ORIGINS=
 VITE_ENABLE_MOCK_DATA=false
 VITE_TRANSLATION_MODE=free
 VITE_USE_REAL_TRANSLATION_API=true
@@ -77,6 +78,11 @@ npm run server
 npm run dev
 ```
 
+로컬 개발 주소:
+
+- MEET MEET frontend: `http://localhost:5174`
+- MEET MEET API: `http://localhost:8787`
+
 한 터미널에서 둘 다 실행하려면 다음 명령도 사용할 수 있습니다.
 
 ```bash
@@ -86,6 +92,8 @@ npm run dev:all
 ## API 서버
 
 Express 서버는 기본적으로 `http://localhost:8787`에서 실행됩니다.
+
+로컬 개발 CORS는 기본 개발 주소인 `http://localhost:5174`, `http://127.0.0.1:5174`를 허용합니다. 기존 로컬 개발 origin 호환을 위해 `http://localhost:5173`, `http://127.0.0.1:5173`도 허용합니다. 배포된 프론트엔드를 별도 API 서버에 연결할 때는 `CORS_ALLOWED_ORIGINS`에 허용할 origin을 쉼표로 구분해 설정합니다.
 
 주요 endpoint:
 

@@ -353,6 +353,7 @@ function LiveKitDataBridge({
           ? message?.type === 'game-state-snapshot'
             || message?.type === 'game-state-request'
             || message?.type === 'game-ready-change'
+            || message?.type === 'attack-start-request'
           : message?.type === 'chat-message'
             || message?.type === 'system-message'
       )

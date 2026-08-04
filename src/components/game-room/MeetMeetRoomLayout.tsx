@@ -8,6 +8,9 @@ type MeetMeetRoomLayoutProps = {
   board: ReactNode
   selectedParticipantId?: number
   readyParticipantIdentities?: string[]
+  attackerIdentity?: string
+  defenderIdentities?: string[]
+  isAttackActive?: boolean
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -17,6 +20,9 @@ export function MeetMeetRoomLayout({
   board,
   selectedParticipantId,
   readyParticipantIdentities,
+  attackerIdentity,
+  defenderIdentities,
+  isAttackActive,
   onSelectParticipant,
   onReconnectMedia,
 }: MeetMeetRoomLayoutProps) {
@@ -32,6 +38,9 @@ export function MeetMeetRoomLayout({
         participants={columns.left}
         selectedParticipantId={selectedParticipantId}
         readyParticipantIdentities={readyParticipantIdentities}
+        attackerIdentity={attackerIdentity}
+        defenderIdentities={defenderIdentities}
+        isAttackActive={isAttackActive}
         onSelectParticipant={onSelectParticipant}
         onReconnectMedia={onReconnectMedia}
       />
@@ -43,6 +52,9 @@ export function MeetMeetRoomLayout({
         participants={columns.right}
         selectedParticipantId={selectedParticipantId}
         readyParticipantIdentities={readyParticipantIdentities}
+        attackerIdentity={attackerIdentity}
+        defenderIdentities={defenderIdentities}
+        isAttackActive={isAttackActive}
         onSelectParticipant={onSelectParticipant}
         onReconnectMedia={onReconnectMedia}
       />

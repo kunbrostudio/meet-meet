@@ -1,4 +1,5 @@
 import type {
+  GameAttackStartRequest,
   GamePhase,
   GameReadyChange,
   GameStateRequest,
@@ -17,6 +18,18 @@ type CreateGameStateSnapshotInput = {
   phase?: GamePhase
   countdownStartedAt?: string
   countdownDurationMs?: number
+  roundNumber?: number
+  activePlayerIdentities?: string[]
+  turnOrder?: string[]
+  currentTurnIndex?: number
+  attackerIdentity?: string
+  defenderIdentities?: string[]
+  roleRevealStartedAt?: string
+  roleRevealDurationMs?: number
+  attackStartedAt?: string
+  attackDurationMs?: number
+  attackEndsAt?: string
+  attackSequence?: number
 }
 
 export function getLobbyGamePhase(
@@ -60,6 +73,18 @@ export function createGameStateSnapshot({
   phase,
   countdownStartedAt,
   countdownDurationMs,
+  roundNumber,
+  activePlayerIdentities,
+  turnOrder,
+  currentTurnIndex,
+  attackerIdentity,
+  defenderIdentities,
+  roleRevealStartedAt,
+  roleRevealDurationMs,
+  attackStartedAt,
+  attackDurationMs,
+  attackEndsAt,
+  attackSequence,
 }: CreateGameStateSnapshotInput): GameStateSnapshot {
   const visibleParticipants = participants.slice(0, participantCount)
   const connectedParticipantCount = visibleParticipants.length
@@ -87,6 +112,18 @@ export function createGameStateSnapshot({
     readyParticipantCount,
     countdownStartedAt,
     countdownDurationMs,
+    roundNumber,
+    activePlayerIdentities,
+    turnOrder,
+    currentTurnIndex,
+    attackerIdentity,
+    defenderIdentities,
+    roleRevealStartedAt,
+    roleRevealDurationMs,
+    attackStartedAt,
+    attackDurationMs,
+    attackEndsAt,
+    attackSequence,
     hostParticipantIdentity:
       hostParticipantIdentity
       ?? hostParticipant?.liveKitIdentity
@@ -100,6 +137,99 @@ export function createGameStateSnapshot({
       isReady: readyIdentitySet.has(getParticipantGameIdentity(participant)),
     })),
     updatedAt: new Date().toISOString(),
+  }
+}
+
+export function getActivePlayerIdentities(input: {
+  participants: Participant[]
+  participantCount: number
+  readyParticipantIdentities: Iterable<string>
+}): string[] {
+  const visibleParticipants = input.participants.slice(0, input.participantCount)
+  const visibleIdentitySet = new Set(
+    visibleParticipants.map(getParticipantGameIdentity),
+  )
+  const readyIdentities = Array.from(new Set(input.readyParticipantIdentities))
+    .filter((identity) => visibleIdentitySet.has(identity))
+
+  if (readyIdentities.length >= 2) {
+    return readyIdentities.slice(0, 4)
+  }
+
+  return Array.from(visibleIdentitySet).slice(0, 4)
+}
+
+export function createTurnOrder(playerIdentities: string[]): string[] {
+  const turnOrder = [...new Set(playerIdentities)]
+
+  for (let index = turnOrder.length - 1; index > 0; index -= 1) {
+    const randomValues = new Uint32Array(1)
+    crypto.getRandomValues(randomValues)
+    const swapIndex = randomValues[0] % (index + 1)
+    const currentIdentity = turnOrder[index]
+    turnOrder[index] = turnOrder[swapIndex]
+    turnOrder[swapIndex] = currentIdentity
+  }
+
+  return turnOrder
+}
+
+export function getDefenderIdentities(
+  activePlayerIdentities: string[],
+  attackerIdentity: string | undefined,
+): string[] {
+  if (!attackerIdentity) {
+    return []
+  }
+
+  return activePlayerIdentities.filter(
+    (participantIdentity) => participantIdentity !== attackerIdentity,
+  )
+}
+
+export function getGameStateSnapshotKey(snapshot: GameStateSnapshot): string {
+  return JSON.stringify({
+    phase: snapshot.phase,
+    countdownStartedAt: snapshot.countdownStartedAt,
+    countdownDurationMs: snapshot.countdownDurationMs,
+    roundNumber: snapshot.roundNumber,
+    activePlayerIdentities: snapshot.activePlayerIdentities,
+    turnOrder: snapshot.turnOrder,
+    currentTurnIndex: snapshot.currentTurnIndex,
+    attackerIdentity: snapshot.attackerIdentity,
+    defenderIdentities: snapshot.defenderIdentities,
+    roleRevealStartedAt: snapshot.roleRevealStartedAt,
+    roleRevealDurationMs: snapshot.roleRevealDurationMs,
+    attackStartedAt: snapshot.attackStartedAt,
+    attackDurationMs: snapshot.attackDurationMs,
+    attackEndsAt: snapshot.attackEndsAt,
+    attackSequence: snapshot.attackSequence,
+    participantCount: snapshot.participantCount,
+    connectedParticipantCount: snapshot.connectedParticipantCount,
+    readyParticipantCount: snapshot.readyParticipantCount,
+    participants: snapshot.participants.map((participant) => [
+      participant.participantIdentity,
+      participant.name,
+      participant.role,
+      participant.isConnected,
+      participant.isReady,
+    ]),
+  })
+}
+
+export function createGameAttackStartRequest(input: {
+  meetingId: string
+  roomCode: string
+  roundNumber: number
+  attackSequence?: number
+}): GameAttackStartRequest {
+  return {
+    type: 'attack-start-request',
+    meetingId: input.meetingId,
+    roomCode: input.roomCode,
+    roundNumber: input.roundNumber,
+    attackSequence: input.attackSequence,
+    requestedAt: new Date().toISOString(),
   }
 }
 

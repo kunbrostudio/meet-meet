@@ -6,6 +6,8 @@ type ParticipantGameCardProps = {
   participant: Participant
   selected?: boolean
   isReady?: boolean
+  gameRole?: 'attacker' | 'defender'
+  isAttackActive?: boolean
   onSelect?: () => void
   onReconnectMedia?: () => void
 }
@@ -61,6 +63,8 @@ function ParticipantGameCardComponent({
   participant,
   selected = false,
   isReady = false,
+  gameRole,
+  isAttackActive = false,
   onSelect,
   onReconnectMedia,
 }: ParticipantGameCardProps) {
@@ -78,6 +82,9 @@ function ParticipantGameCardComponent({
         participant.isSpeaking ? 'speaking' : '',
         selected ? 'is-selected' : '',
         onSelect ? 'is-selectable' : '',
+        gameRole === 'attacker' ? 'is-attacker' : '',
+        gameRole === 'defender' ? 'is-defender' : '',
+        gameRole === 'attacker' && isAttackActive ? 'is-active-attacker' : '',
       ].filter(Boolean).join(' ')}
       style={{ background: participant.avatarColor }}
       onClick={onSelect}
@@ -135,7 +142,15 @@ function ParticipantGameCardComponent({
         </span>
       </div>
       <div className="participant-game-status-slot" aria-hidden="true">
-        {isReady && (
+        {gameRole === 'attacker' ? (
+          <span className="participant-role-badge is-attacker">
+            {isAttackActive ? 'ACTIVE ATTACK' : 'ATTACKER'}
+          </span>
+        ) : gameRole === 'defender' ? (
+          <span className="participant-role-badge is-defender">
+            {isAttackActive ? '버티는 중' : 'DEFENDER'}
+          </span>
+        ) : isReady && (
           <span className="participant-ready-badge">READY</span>
         )}
       </div>
@@ -159,5 +174,7 @@ export const ParticipantGameCard = memo(
     && previous.participant.microphoneTrackId === next.participant.microphoneTrackId
     && previous.selected === next.selected
     && previous.isReady === next.isReady
+    && previous.gameRole === next.gameRole
+    && previous.isAttackActive === next.isAttackActive
   ),
 )

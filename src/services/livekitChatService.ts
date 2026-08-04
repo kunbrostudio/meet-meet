@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types/chat'
 import type {
+  GameAttackStartRequest,
   GameReadyChange,
   GameStateRequest,
   GameStateSnapshot,
@@ -101,6 +102,10 @@ export type LiveKitDataMessage =
   | {
       type: 'game-ready-change'
       payload: GameReadyChange
+    }
+  | {
+      type: 'attack-start-request'
+      payload: GameAttackStartRequest
     }
 
 const encoder = new TextEncoder()
@@ -260,6 +265,7 @@ export function decodeLiveKitDataMessage(
         && message.type !== 'game-state-snapshot'
         && message.type !== 'game-state-request'
         && message.type !== 'game-ready-change'
+        && message.type !== 'attack-start-request'
       )
       || (
         message.type === 'meeting-ended'
@@ -272,6 +278,8 @@ export function decodeLiveKitDataMessage(
             ? !isGameStateRequest(message.payload)
           : message.type === 'game-ready-change'
             ? !isGameReadyChange(message.payload)
+          : message.type === 'attack-start-request'
+            ? !isGameAttackStartRequest(message.payload)
           : message.type === 'transcript-created'
             ? !isLiveKitTranscriptPayload(message.payload)
               && !isTranscript(message.payload)
@@ -496,6 +504,84 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       )
     )
     && (
+      snapshot.roundNumber === undefined
+      || (
+        typeof snapshot.roundNumber === 'number'
+        && Number.isFinite(snapshot.roundNumber)
+      )
+    )
+    && (
+      snapshot.activePlayerIdentities === undefined
+      || (
+        Array.isArray(snapshot.activePlayerIdentities)
+        && snapshot.activePlayerIdentities.every(
+          (participantIdentity) => typeof participantIdentity === 'string',
+        )
+      )
+    )
+    && (
+      snapshot.turnOrder === undefined
+      || (
+        Array.isArray(snapshot.turnOrder)
+        && snapshot.turnOrder.every(
+          (participantIdentity) => typeof participantIdentity === 'string',
+        )
+      )
+    )
+    && (
+      snapshot.currentTurnIndex === undefined
+      || (
+        typeof snapshot.currentTurnIndex === 'number'
+        && Number.isFinite(snapshot.currentTurnIndex)
+      )
+    )
+    && (
+      snapshot.attackerIdentity === undefined
+      || typeof snapshot.attackerIdentity === 'string'
+    )
+    && (
+      snapshot.defenderIdentities === undefined
+      || (
+        Array.isArray(snapshot.defenderIdentities)
+        && snapshot.defenderIdentities.every(
+          (participantIdentity) => typeof participantIdentity === 'string',
+        )
+      )
+    )
+    && (
+      snapshot.roleRevealStartedAt === undefined
+      || typeof snapshot.roleRevealStartedAt === 'string'
+    )
+    && (
+      snapshot.roleRevealDurationMs === undefined
+      || (
+        typeof snapshot.roleRevealDurationMs === 'number'
+        && Number.isFinite(snapshot.roleRevealDurationMs)
+      )
+    )
+    && (
+      snapshot.attackStartedAt === undefined
+      || typeof snapshot.attackStartedAt === 'string'
+    )
+    && (
+      snapshot.attackDurationMs === undefined
+      || (
+        typeof snapshot.attackDurationMs === 'number'
+        && Number.isFinite(snapshot.attackDurationMs)
+      )
+    )
+    && (
+      snapshot.attackEndsAt === undefined
+      || typeof snapshot.attackEndsAt === 'string'
+    )
+    && (
+      snapshot.attackSequence === undefined
+      || (
+        typeof snapshot.attackSequence === 'number'
+        && Number.isFinite(snapshot.attackSequence)
+      )
+    )
+    && (
       snapshot.hostParticipantIdentity === undefined
       || typeof snapshot.hostParticipantIdentity === 'string'
     )
@@ -554,12 +640,41 @@ function isGameReadyChange(value: unknown): value is GameReadyChange {
   )
 }
 
+function isGameAttackStartRequest(
+  value: unknown,
+): value is GameAttackStartRequest {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const request = value as Partial<GameAttackStartRequest>
+  return (
+    request.type === 'attack-start-request'
+    && typeof request.meetingId === 'string'
+    && typeof request.roomCode === 'string'
+    && typeof request.roundNumber === 'number'
+    && Number.isFinite(request.roundNumber)
+    && (
+      request.attackSequence === undefined
+      || (
+        typeof request.attackSequence === 'number'
+        && Number.isFinite(request.attackSequence)
+      )
+    )
+    && typeof request.requestedAt === 'string'
+  )
+}
+
 function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
   return (
     value === 'waiting'
     || value === 'ready'
     || value === 'countdown'
     || value === 'game-started'
+    || value === 'role-reveal'
+    || value === 'attack-ready'
+    || value === 'attack-active'
+    || value === 'attack-ended'
     || value === 'attack-prep'
     || value === 'attacking'
     || value === 'judging'

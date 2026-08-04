@@ -7,6 +7,9 @@ type ParticipantColumnProps = {
   participants: Participant[]
   selectedParticipantId?: number
   readyParticipantIdentities?: string[]
+  attackerIdentity?: string
+  defenderIdentities?: string[]
+  isAttackActive?: boolean
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -16,10 +19,14 @@ export function ParticipantColumn({
   participants,
   selectedParticipantId,
   readyParticipantIdentities = [],
+  attackerIdentity,
+  defenderIdentities = [],
+  isAttackActive = false,
   onSelectParticipant,
   onReconnectMedia,
 }: ParticipantColumnProps) {
   const readyIdentitySet = new Set(readyParticipantIdentities)
+  const defenderIdentitySet = new Set(defenderIdentities)
 
   return (
     <aside
@@ -30,18 +37,32 @@ export function ParticipantColumn({
       {participants.length === 0 ? (
         <div className="participant-waiting-slot">친구를 기다리는 중</div>
       ) : participants.map((participant) => (
-        <ParticipantGameCard
-          participant={participant}
-          selected={participant.id === selectedParticipantId}
-          isReady={readyIdentitySet.has(getParticipantGameIdentity(participant))}
-          onSelect={
-            onSelectParticipant
-              ? () => onSelectParticipant(participant.id)
-              : undefined
-          }
-          onReconnectMedia={onReconnectMedia}
-          key={participant.liveKitIdentity ?? participant.id}
-        />
+        (() => {
+          const participantIdentity = getParticipantGameIdentity(participant)
+          const gameRole =
+            participantIdentity === attackerIdentity
+              ? 'attacker'
+              : defenderIdentitySet.has(participantIdentity)
+                ? 'defender'
+                : undefined
+
+          return (
+            <ParticipantGameCard
+              participant={participant}
+              selected={participant.id === selectedParticipantId}
+              isReady={readyIdentitySet.has(participantIdentity)}
+              gameRole={gameRole}
+              isAttackActive={isAttackActive}
+              onSelect={
+                onSelectParticipant
+                  ? () => onSelectParticipant(participant.id)
+                  : undefined
+              }
+              onReconnectMedia={onReconnectMedia}
+              key={participant.liveKitIdentity ?? participant.id}
+            />
+          )
+        })()
       ))}
     </aside>
   )

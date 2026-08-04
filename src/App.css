@@ -6493,6 +6493,48 @@
   font-weight: 900;
 }
 
+.meeting-page .participant-role-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.meeting-page .participant-role-badge.is-attacker {
+  border: 1px solid rgba(255, 61, 198, 0.58);
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.2);
+}
+
+.meeting-page .participant-role-badge.is-defender {
+  border: 1px solid rgba(99, 241, 255, 0.34);
+  color: #c9fbff;
+  background: rgba(99, 241, 255, 0.1);
+}
+
+.meeting-page .participant-game-card.is-attacker {
+  border-color: rgba(255, 61, 198, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.28) inset,
+    0 18px 42px rgba(255, 61, 198, 0.12),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.meeting-page .participant-game-card.is-active-attacker {
+  border-color: rgba(255, 61, 198, 0.82);
+  box-shadow:
+    0 0 0 1px rgba(255, 61, 198, 0.36) inset,
+    0 0 22px rgba(255, 61, 198, 0.16),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.meeting-page .participant-game-card.is-defender {
+  border-color: rgba(99, 241, 255, 0.38);
+}
+
 .meeting-page .participant-placeholder {
   background: rgba(7, 18, 38, 0.92);
 }
@@ -6665,6 +6707,121 @@
   margin: 0;
   color: var(--mm-arcade-muted);
   font-size: 12px;
+}
+
+.meeting-page .game-role-reveal-panel,
+.meeting-page .game-attack-ready-panel,
+.meeting-page .game-attack-active-panel,
+.meeting-page .game-attack-ended-panel {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 126px;
+  color: var(--mm-arcade-text);
+  text-align: center;
+}
+
+.meeting-page .game-role-reveal-panel p,
+.meeting-page .game-attack-ready-panel p,
+.meeting-page .game-attack-active-panel p,
+.meeting-page .game-attack-ended-panel p {
+  margin: 0;
+  color: var(--mm-arcade-muted);
+  font-size: 12px;
+}
+
+.meeting-page .game-role-reveal-panel strong,
+.meeting-page .game-attack-ready-panel strong,
+.meeting-page .game-attack-active-panel strong,
+.meeting-page .game-attack-ended-panel strong {
+  color: var(--mm-arcade-cyan);
+  font-size: 24px;
+  font-weight: 900;
+  text-shadow: 0 0 14px rgba(99, 241, 255, 0.18);
+}
+
+.meeting-page .game-role-reveal-panel span {
+  max-width: 280px;
+  color: #ffd7f4;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meeting-page .game-attack-start-button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 61, 198, 0.5);
+  border-radius: 10px;
+  color: #ffd7f4;
+  background: rgba(255, 61, 198, 0.16);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.meeting-page .game-attack-start-button:disabled {
+  cursor: not-allowed;
+  color: var(--mm-arcade-muted);
+  background: rgba(12, 25, 54, 0.46);
+}
+
+.meeting-page .game-attack-meta {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.meeting-page .game-attack-meta span {
+  padding: 5px 8px;
+  border: 1px solid rgba(99, 241, 255, 0.22);
+  border-radius: 999px;
+  color: #c9fbff;
+  background: rgba(99, 241, 255, 0.08);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.meeting-page .game-attack-timer {
+  color: var(--mm-arcade-text);
+  font-size: 42px;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: 0 0 16px rgba(99, 241, 255, 0.18);
+}
+
+.meeting-page .game-attack-progress {
+  overflow: hidden;
+  width: min(260px, 100%);
+  height: 8px;
+  border: 1px solid rgba(99, 241, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(2, 8, 22, 0.72);
+}
+
+.meeting-page .game-attack-progress i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: var(--mm-arcade-cyan);
+}
+
+.meeting-page .game-attack-active-panel > span {
+  color: #ffd7f4;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.meeting-page .game-attack-content-placeholder {
+  width: min(300px, 100%);
+  padding: 12px;
+  border: 1px dashed rgba(99, 241, 255, 0.24);
+  border-radius: 10px;
+  color: var(--mm-arcade-muted);
+  background: rgba(8, 17, 36, 0.68);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 @keyframes countdown-pop {

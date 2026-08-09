@@ -20,7 +20,11 @@ import { MeetingSettingsPanel } from '../components/meeting/MeetingSettingsPanel
 import { ParticipantsPanel } from '../components/meeting/ParticipantsPanel'
 import { RemoveParticipantModal } from '../components/meeting/RemoveParticipantModal'
 import type { Participant } from '../types/participant'
-import type { GamePhase, GameStateSnapshot } from '../types/game'
+import type {
+  GameAttackContent,
+  GamePhase,
+  GameStateSnapshot,
+} from '../types/game'
 import type {
   LanguageCode,
   SpeechRecognitionLanguage,
@@ -75,6 +79,7 @@ import {
   saveChatMessages,
 } from '../services/chatService'
 import {
+  createGameAttackContentSubmitRequest,
   createGameAttackStartRequest,
   createGameReadyChange,
   createGameStateRequest,
@@ -87,6 +92,11 @@ import {
   getParticipantGameIdentity,
   shouldAcceptGameStateSnapshot,
 } from '../services/gameStateService'
+import {
+  fetchAttackContentMetadata,
+  getAttackContentErrorMessage,
+  uploadAttackContent,
+} from '../services/attackContentService'
 import {
   createManualTranslation,
   dedupeTranslations,
@@ -132,6 +142,7 @@ const LiveKitTestRoom = lazy(
 const GAME_COUNTDOWN_DURATION_MS = 3000
 const GAME_ROLE_REVEAL_DURATION_MS = 2600
 const GAME_ATTACK_DURATION_MS = 30_000
+const GAME_ATTACK_END_REVIEW_DURATION_MS = 2400
 
 type MeetingRoomPageProps = {
   meetingId: string
@@ -316,6 +327,8 @@ export function MeetingRoomPage({
     })
   ))
   const [readyParticipantIdentities, setReadyParticipantIdentities] = useState<string[]>([])
+  const [isUploadingAttackContent, setIsUploadingAttackContent] = useState(false)
+  const [attackContentMessage, setAttackContentMessage] = useState('')
   const copyMessageTimerRef = useRef<number | null>(null)
   const captionButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarChatButtonRef = useRef<HTMLButtonElement>(null)
@@ -331,7 +344,9 @@ export function MeetingRoomPage({
   const countdownCompletionTimerRef = useRef<number | null>(null)
   const roleRevealCompletionTimerRef = useRef<number | null>(null)
   const attackCompletionTimerRef = useRef<number | null>(null)
+  const roundTransitionTimerRef = useRef<number | null>(null)
   const processedAttackStartRequestsRef = useRef(new Set<string>())
+  const processedAttackContentRequestsRef = useRef(new Set<string>())
   const screenShareStreamRef = useRef<MediaStream | null>(null)
   const liveKitMediaControllerRef =
     useRef<LiveKitMediaController | null>(null)
@@ -397,6 +412,9 @@ export function MeetingRoomPage({
       }
       if (attackCompletionTimerRef.current !== null) {
         window.clearTimeout(attackCompletionTimerRef.current)
+      }
+      if (roundTransitionTimerRef.current !== null) {
+        window.clearTimeout(roundTransitionTimerRef.current)
       }
       if (meetingSessionSaveTimerRef.current !== null) {
         window.clearTimeout(meetingSessionSaveTimerRef.current)
@@ -1842,6 +1860,7 @@ export function MeetingRoomPage({
     && gameState.phase === 'attack-ready'
     && gameState.attackerIdentity === localParticipantIdentity
     && typeof gameState.roundNumber === 'number'
+    && Boolean(gameState.attackContent)
   const localGameRole =
     localParticipantIdentity && gameState.attackerIdentity === localParticipantIdentity
       ? 'attacker'
@@ -1878,6 +1897,7 @@ export function MeetingRoomPage({
       || currentGameState.phase === 'attack-ready'
       || currentGameState.phase === 'attack-active'
       || currentGameState.phase === 'attack-ended'
+      || currentGameState.phase === 'round-ended'
     )
       ? currentGameState.phase
       : undefined
@@ -1892,11 +1912,13 @@ export function MeetingRoomPage({
     let attackDurationMs = currentGameState.attackDurationMs
     let attackEndsAt = currentGameState.attackEndsAt
     const attackSequence = currentGameState.attackSequence
+    let attackContent = currentGameState.attackContent
     const shouldReconcileRoles =
       phase === 'role-reveal'
       || phase === 'attack-ready'
       || phase === 'attack-active'
       || phase === 'attack-ended'
+      || phase === 'round-ended'
 
     if (shouldReconcileRoles) {
       activePlayerIdentities = (activePlayerIdentities ?? []).filter(
@@ -1915,6 +1937,7 @@ export function MeetingRoomPage({
         attackStartedAt = undefined
         attackDurationMs = undefined
         attackEndsAt = undefined
+        attackContent = null
       } else {
         turnOrder = (turnOrder ?? activePlayerIdentities).filter(
           (participantIdentity) => activePlayerIdentities?.includes(participantIdentity),
@@ -1936,6 +1959,7 @@ export function MeetingRoomPage({
             attackDurationMs = undefined
             attackEndsAt = undefined
           }
+          attackContent = null
         }
 
         currentTurnIndex = Math.max(
@@ -1974,6 +1998,7 @@ export function MeetingRoomPage({
       attackDurationMs,
       attackEndsAt,
       attackSequence,
+      attackContent,
     })
   }, [
     displayedParticipants,
@@ -2136,6 +2161,7 @@ export function MeetingRoomPage({
       || currentGameState.attackerIdentity !== requesterIdentity
       || typeof currentRoundNumber !== 'number'
       || !currentGameState.activePlayerIdentities?.includes(requesterIdentity)
+      || !currentGameState.attackContent
       || currentGameState.attackStartedAt
       || processedAttackStartRequestsRef.current.has(requestKey)
     ) {
@@ -2171,6 +2197,7 @@ export function MeetingRoomPage({
       attackDurationMs: GAME_ATTACK_DURATION_MS,
       attackEndsAt: attackEndsAt.toISOString(),
       attackSequence: currentAttackSequence + 1,
+      attackContent: currentGameState.attackContent,
     })
     const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2189,12 +2216,193 @@ export function MeetingRoomPage({
     roomCode,
   ])
 
+  const approveAttackContentFromHost = useCallback(async (
+    contentId: string,
+    senderParticipantIdentity: string,
+    requestedRoundNumber: number,
+    requestedAttackSequence?: number,
+  ) => {
+    const currentGameState = gameStateRef.current
+    const currentAttackSequence = currentGameState.attackSequence
+    const requestKey = [
+      currentGameState.roundNumber ?? 'round',
+      currentAttackSequence ?? 'sequence',
+      senderParticipantIdentity,
+      contentId,
+    ].join(':')
+
+    if (
+      !isCurrentUserHost
+      || currentGameState.phase !== 'attack-ready'
+      || currentGameState.attackerIdentity !== senderParticipantIdentity
+      || currentGameState.roundNumber !== requestedRoundNumber
+      || currentAttackSequence !== requestedAttackSequence
+      || !currentGameState.activePlayerIdentities?.includes(senderParticipantIdentity)
+      || processedAttackContentRequestsRef.current.has(requestKey)
+    ) {
+      return
+    }
+
+    processedAttackContentRequestsRef.current.add(requestKey)
+
+    try {
+      const metadata = await fetchAttackContentMetadata(contentId)
+      const normalizedMetadataRoomCode = metadata.roomCode.trim().toUpperCase()
+
+      if (
+        metadata.contentId !== contentId
+        || normalizedMetadataRoomCode !== roomCode
+        || metadata.uploaderParticipantIdentity !== senderParticipantIdentity
+      ) {
+        return
+      }
+
+      const latestGameState = gameStateRef.current
+
+      if (
+        latestGameState.phase !== 'attack-ready'
+        || latestGameState.attackerIdentity !== senderParticipantIdentity
+        || latestGameState.roundNumber !== requestedRoundNumber
+        || latestGameState.attackSequence !== requestedAttackSequence
+      ) {
+        return
+      }
+
+      const nextAttackContent: GameAttackContent = {
+        contentId: metadata.contentId,
+        mimeType: metadata.mimeType,
+        size: metadata.size,
+        uploaderParticipantIdentity: metadata.uploaderParticipantIdentity,
+        roomCode: normalizedMetadataRoomCode,
+        roundNumber: requestedRoundNumber,
+        version: (latestGameState.attackContent?.version ?? 0) + 1,
+        createdAt: metadata.createdAt,
+      }
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: latestGameState.revision,
+        hostParticipantIdentity: latestGameState.hostParticipantIdentity,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+        phase: 'attack-ready',
+        countdownStartedAt: latestGameState.countdownStartedAt,
+        countdownDurationMs: latestGameState.countdownDurationMs,
+        roundNumber: latestGameState.roundNumber,
+        activePlayerIdentities: latestGameState.activePlayerIdentities,
+        turnOrder: latestGameState.turnOrder,
+        currentTurnIndex: latestGameState.currentTurnIndex,
+        attackerIdentity: latestGameState.attackerIdentity,
+        defenderIdentities: latestGameState.defenderIdentities,
+        roleRevealStartedAt: latestGameState.roleRevealStartedAt,
+        roleRevealDurationMs: latestGameState.roleRevealDurationMs,
+        attackSequence: latestGameState.attackSequence,
+        attackContent: nextAttackContent,
+      })
+      const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+    } catch (error) {
+      console.warn('[livekit-game] Failed to approve attack image', error)
+    }
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+  ])
+
+  const handleUploadAttackContent = useCallback(async (file: File) => {
+    const currentGameState = gameStateRef.current
+
+    if (
+      !localParticipantIdentity
+      || currentGameState.phase !== 'attack-ready'
+      || currentGameState.attackerIdentity !== localParticipantIdentity
+      || typeof currentGameState.roundNumber !== 'number'
+    ) {
+      return
+    }
+
+    setIsUploadingAttackContent(true)
+    setAttackContentMessage('이미지를 업로드하고 있습니다...')
+
+    try {
+      const metadata = await uploadAttackContent({ roomCode, file })
+      const latestGameState = gameStateRef.current
+
+      if (
+        latestGameState.phase !== 'attack-ready'
+        || latestGameState.attackerIdentity !== localParticipantIdentity
+        || latestGameState.roundNumber !== currentGameState.roundNumber
+      ) {
+        setAttackContentMessage('공격 상태가 변경되어 이미지를 적용하지 않았습니다.')
+        return
+      }
+
+      if (isCurrentUserHost) {
+        await approveAttackContentFromHost(
+          metadata.contentId,
+          localParticipantIdentity,
+          latestGameState.roundNumber,
+          latestGameState.attackSequence,
+        )
+        setAttackContentMessage('공격 이미지가 준비되었습니다.')
+        return
+      }
+
+      const controller = liveKitDataControllerRef.current
+
+      if (!controller || !isLiveKitConnected || !isLiveKitDataReady) {
+        setAttackContentMessage('이미지를 업로드했지만 Host에게 전달하지 못했습니다.')
+        return
+      }
+
+      await controller.publishGameMessage({
+        type: 'attack-content-submit-request',
+        payload: createGameAttackContentSubmitRequest({
+          meetingId,
+          roomCode,
+          contentId: metadata.contentId,
+          roundNumber: latestGameState.roundNumber,
+          attackSequence: latestGameState.attackSequence,
+        }),
+      })
+      setAttackContentMessage('이미지를 업로드했습니다. Host 승인 중입니다.')
+    } catch (error) {
+      setAttackContentMessage(
+        error instanceof Error
+          ? error.message
+          : getAttackContentErrorMessage('ATTACK_CONTENT_UPLOAD_FAILED'),
+      )
+    } finally {
+      setIsUploadingAttackContent(false)
+    }
+  }, [
+    approveAttackContentFromHost,
+    isCurrentUserHost,
+    isLiveKitConnected,
+    isLiveKitDataReady,
+    localParticipantIdentity,
+    meetingId,
+    roomCode,
+  ])
+
   const handleRequestAttackStart = useCallback(() => {
     if (
       !localParticipantIdentity
       || gameStateRef.current.phase !== 'attack-ready'
       || gameStateRef.current.attackerIdentity !== localParticipantIdentity
       || typeof gameStateRef.current.roundNumber !== 'number'
+      || !gameStateRef.current.attackContent
     ) {
       return
     }
@@ -2479,6 +2687,7 @@ export function MeetingRoomPage({
         defenderIdentities: currentGameState.defenderIdentities,
         roleRevealStartedAt: currentGameState.roleRevealStartedAt,
         roleRevealDurationMs: currentGameState.roleRevealDurationMs,
+        attackContent: null,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2567,6 +2776,7 @@ export function MeetingRoomPage({
         attackDurationMs: currentGameState.attackDurationMs,
         attackEndsAt: currentGameState.attackEndsAt,
         attackSequence: currentGameState.attackSequence,
+        attackContent: currentGameState.attackContent,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2590,6 +2800,137 @@ export function MeetingRoomPage({
     gameState.attackEndsAt,
     gameState.attackSequence,
     gameState.phase,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (roundTransitionTimerRef.current !== null) {
+      window.clearTimeout(roundTransitionTimerRef.current)
+      roundTransitionTimerRef.current = null
+    }
+
+    if (
+      !isCurrentUserHost
+      || gameState.phase !== 'attack-ended'
+      || wasRemovedFromMeeting
+    ) {
+      return
+    }
+
+    roundTransitionTimerRef.current = window.setTimeout(() => {
+      const currentGameState = gameStateRef.current
+
+      if (
+        currentGameState.phase !== 'attack-ended'
+        || currentGameState.attackSequence !== gameState.attackSequence
+        || currentGameState.roundNumber !== gameState.roundNumber
+      ) {
+        return
+      }
+
+      const visibleParticipantIdentities = new Set(
+        displayedParticipants
+          .slice(0, participantCount)
+          .map(getParticipantGameIdentity),
+      )
+      const activePlayerIdentities = (currentGameState.activePlayerIdentities ?? [])
+        .filter((participantIdentity) => (
+          visibleParticipantIdentities.has(participantIdentity)
+        ))
+
+      if (activePlayerIdentities.length < 2) {
+        const nextSnapshot = createGameStateSnapshot({
+          meetingId,
+          roomCode,
+          participantCount,
+          participants: displayedParticipants,
+          previousRevision: currentGameState.revision,
+          hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+          readyParticipantIdentities: activeReadyParticipantIdentities,
+          phase: 'waiting',
+        })
+        const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+        roundTransitionTimerRef.current = null
+        gameStateSnapshotKeyRef.current = snapshotKey
+        gameStateRef.current = nextSnapshot
+        setGameState(nextSnapshot)
+        publishedGameStateSnapshotRef.current = snapshotKey
+        void publishGameStateSnapshot(nextSnapshot)
+        return
+      }
+
+      let turnOrder = (currentGameState.turnOrder ?? activePlayerIdentities)
+        .filter((participantIdentity) => (
+          activePlayerIdentities.includes(participantIdentity)
+        ))
+
+      activePlayerIdentities.forEach((participantIdentity) => {
+        if (!turnOrder.includes(participantIdentity)) {
+          turnOrder = [...turnOrder, participantIdentity]
+        }
+      })
+
+      const currentAttackerIndex = Math.max(
+        0,
+        turnOrder.findIndex((participantIdentity) => (
+          participantIdentity === currentGameState.attackerIdentity
+        )),
+      )
+      const nextTurnIndex = (currentAttackerIndex + 1) % turnOrder.length
+      const nextAttackerIdentity = turnOrder[nextTurnIndex]
+      const nextRoundNumber = (currentGameState.roundNumber ?? 1) + 1
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: currentGameState.revision,
+        hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+        phase: 'round-ended',
+        countdownStartedAt: currentGameState.countdownStartedAt,
+        countdownDurationMs: currentGameState.countdownDurationMs,
+        roundNumber: nextRoundNumber,
+        activePlayerIdentities,
+        turnOrder,
+        currentTurnIndex: nextTurnIndex,
+        attackerIdentity: nextAttackerIdentity,
+        defenderIdentities: getDefenderIdentities(
+          activePlayerIdentities,
+          nextAttackerIdentity,
+        ),
+        attackSequence: currentGameState.attackSequence,
+        attackContent: null,
+      })
+      const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+      roundTransitionTimerRef.current = null
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      setAttackContentMessage('')
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+    }, GAME_ATTACK_END_REVIEW_DURATION_MS)
+
+    return () => {
+      if (roundTransitionTimerRef.current !== null) {
+        window.clearTimeout(roundTransitionTimerRef.current)
+        roundTransitionTimerRef.current = null
+      }
+    }
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    gameState.attackSequence,
+    gameState.phase,
+    gameState.roundNumber,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -3044,12 +3385,32 @@ export function MeetingRoomPage({
           || currentGameState.attackerIdentity !== senderParticipantIdentity
           || currentGameState.roundNumber !== message.payload.roundNumber
           || !currentGameState.activePlayerIdentities?.includes(senderParticipantIdentity)
+          || !currentGameState.attackContent
           || currentGameState.attackStartedAt
         ) {
           return
         }
 
         startAttackFromHost(senderParticipantIdentity)
+        return
+      }
+
+      if (message.type === 'attack-content-submit-request') {
+        if (
+          !isCurrentUserHost
+          || !senderParticipantIdentity
+          || message.payload.meetingId !== meetingId
+          || message.payload.roomCode !== roomCode
+        ) {
+          return
+        }
+
+        void approveAttackContentFromHost(
+          message.payload.contentId,
+          senderParticipantIdentity,
+          message.payload.roundNumber,
+          message.payload.attackSequence,
+        )
         return
       }
 
@@ -3174,6 +3535,7 @@ export function MeetingRoomPage({
       displayedLocalParticipant,
       displayedParticipants,
       finalizeMeetingAndNavigate,
+      approveAttackContentFromHost,
       createCurrentGameStateSnapshot,
       isCurrentUserHost,
       liveKitConnection?.participantIdentity,
@@ -3437,6 +3799,7 @@ export function MeetingRoomPage({
                       countdownDurationMs={gameState.countdownDurationMs}
                       attackEndsAt={gameState.attackEndsAt}
                       attackDurationMs={gameState.attackDurationMs}
+                      attackContent={gameState.attackContent}
                       roundNumber={gameState.roundNumber}
                       attackerName={attackerName}
                       localGameRole={localGameRole}
@@ -3446,8 +3809,18 @@ export function MeetingRoomPage({
                       isHost={isCurrentUserHost}
                       canStartGame={canStartGame}
                       canRequestAttackStart={canRequestAttackStart}
+                      isUploadingAttackContent={
+                        gameState.phase === 'attack-ready'
+                        && isUploadingAttackContent
+                      }
+                      attackContentMessage={
+                        gameState.phase === 'attack-ready'
+                          ? attackContentMessage
+                          : ''
+                      }
                       onToggleReady={handleToggleReady}
                       onStartGame={handleStartGame}
+                      onUploadAttackContent={handleUploadAttackContent}
                       onRequestAttackStart={handleRequestAttackStart}
                       screenShareSlot={
                         activeScreenShareStream ? (

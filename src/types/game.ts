@@ -7,6 +7,7 @@ export type GamePhase =
   | 'attack-ready'
   | 'attack-active'
   | 'attack-ended'
+  | 'round-ended'
   | 'attack-prep'
   | 'attacking'
   | 'judging'
@@ -45,9 +46,21 @@ export type GameStateSnapshot = {
   attackDurationMs?: number
   attackEndsAt?: string
   attackSequence?: number
+  attackContent?: GameAttackContent | null
   hostParticipantIdentity?: string
   participants: GameParticipantStatus[]
   updatedAt: string
+}
+
+export type GameAttackContent = {
+  contentId: string
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  size: number
+  uploaderParticipantIdentity: string
+  roomCode: string
+  roundNumber: number
+  version: number
+  createdAt: string
 }
 
 export type GameStateRequest = {
@@ -71,6 +84,16 @@ export type GameAttackStartRequest = {
   type: 'attack-start-request'
   meetingId: string
   roomCode: string
+  roundNumber: number
+  attackSequence?: number
+  requestedAt: string
+}
+
+export type GameAttackContentSubmitRequest = {
+  type: 'attack-content-submit-request'
+  meetingId: string
+  roomCode: string
+  contentId: string
   roundNumber: number
   attackSequence?: number
   requestedAt: string

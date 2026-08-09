@@ -65,6 +65,8 @@ FREE_BETA_CREATE_RATE_LIMIT=3
 FREE_BETA_CREATE_RATE_WINDOW_SECONDS=600
 FREE_BETA_JOIN_RATE_LIMIT=10
 FREE_BETA_JOIN_RATE_WINDOW_SECONDS=60
+FREE_BETA_ATTACK_UPLOAD_RATE_LIMIT=10
+FREE_BETA_ATTACK_UPLOAD_RATE_WINDOW_SECONDS=60
 FREE_BETA_MEETING_CREATION_ENABLED=true
 ```
 
@@ -101,10 +103,15 @@ Express 서버는 기본적으로 `http://localhost:8787`에서 실행됩니다.
 - `POST /api/free-beta/rooms`
 - `POST /api/free-beta/rooms/join`
 - `POST /api/free-beta/rooms/end`
+- `POST /api/free-beta/rooms/:roomCode/attack-content`
+- `GET /api/free-beta/attack-content/:contentId/meta`
+- `GET /api/free-beta/attack-content/:contentId`
 - `POST /api/livekit/token`
 - `POST /api/livekit/remove-participant`
 
 아직 남아 있는 `/api/translate`는 초기 MEET MEET 화면에서 사용하지 않습니다.
+
+공격 이미지 API는 JPEG, PNG, WebP만 허용하고 최대 3MB까지 업로드할 수 있습니다. 업로드 파일은 서버 임시 디렉터리에 저장되며 LiveKit Data에는 파일 본문 대신 `contentId` metadata만 동기화합니다.
 
 `LIVEKIT_API_SECRET`과 `OPENAI_API_KEY`는 서버에서만 사용해야 하며 프론트엔드 환경 변수로 노출하면 안 됩니다.
 

@@ -1,4 +1,6 @@
 import type {
+  GameAttackContent,
+  GameAttackContentSubmitRequest,
   GameAttackStartRequest,
   GamePhase,
   GameReadyChange,
@@ -30,6 +32,7 @@ type CreateGameStateSnapshotInput = {
   attackDurationMs?: number
   attackEndsAt?: string
   attackSequence?: number
+  attackContent?: GameAttackContent | null
 }
 
 export function getLobbyGamePhase(
@@ -85,6 +88,7 @@ export function createGameStateSnapshot({
   attackDurationMs,
   attackEndsAt,
   attackSequence,
+  attackContent,
 }: CreateGameStateSnapshotInput): GameStateSnapshot {
   const visibleParticipants = participants.slice(0, participantCount)
   const connectedParticipantCount = visibleParticipants.length
@@ -124,6 +128,7 @@ export function createGameStateSnapshot({
     attackDurationMs,
     attackEndsAt,
     attackSequence,
+    attackContent: attackContent ?? null,
     hostParticipantIdentity:
       hostParticipantIdentity
       ?? hostParticipant?.liveKitIdentity
@@ -204,6 +209,7 @@ export function getGameStateSnapshotKey(snapshot: GameStateSnapshot): string {
     attackDurationMs: snapshot.attackDurationMs,
     attackEndsAt: snapshot.attackEndsAt,
     attackSequence: snapshot.attackSequence,
+    attackContent: snapshot.attackContent,
     participantCount: snapshot.participantCount,
     connectedParticipantCount: snapshot.connectedParticipantCount,
     readyParticipantCount: snapshot.readyParticipantCount,
@@ -215,6 +221,24 @@ export function getGameStateSnapshotKey(snapshot: GameStateSnapshot): string {
       participant.isReady,
     ]),
   })
+}
+
+export function createGameAttackContentSubmitRequest(input: {
+  meetingId: string
+  roomCode: string
+  contentId: string
+  roundNumber: number
+  attackSequence?: number
+}): GameAttackContentSubmitRequest {
+  return {
+    type: 'attack-content-submit-request',
+    meetingId: input.meetingId,
+    roomCode: input.roomCode,
+    contentId: input.contentId,
+    roundNumber: input.roundNumber,
+    attackSequence: input.attackSequence,
+    requestedAt: new Date().toISOString(),
+  }
 }
 
 export function createGameAttackStartRequest(input: {

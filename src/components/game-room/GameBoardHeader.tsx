@@ -10,6 +10,7 @@ const phaseLabels: Record<GamePhase, string> = {
   'attack-ready': '공격 준비',
   'attack-active': '공격 중',
   'attack-ended': '공격 종료',
+  'round-ended': '라운드 종료',
   'attack-prep': '공격 준비',
   attacking: '공격 중',
   judging: '판정 중',

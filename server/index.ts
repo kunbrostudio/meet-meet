@@ -1,6 +1,9 @@
 import 'dotenv/config'
 import cors from 'cors'
 import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import express from 'express'
 import { AccessToken, RoomServiceClient } from 'livekit-server-sdk'
 import OpenAI from 'openai'
@@ -50,6 +53,16 @@ type JoinRoomRequestBody = {
   language?: unknown
 }
 
+type AttackContentRecord = {
+  contentId: string
+  roomCode: string
+  filePath: string
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp'
+  size: number
+  uploaderParticipantIdentity: string
+  createdAt: number
+}
+
 type FreeBetaParticipant = {
   identity: string
   name: string
@@ -67,6 +80,7 @@ type FreeBetaRoom = {
   hostParticipantIdentity: string
   hostControlTokenHash: string
   participants: Map<string, FreeBetaParticipant>
+  attackContentIds: Set<string>
   createdAt: number
   expiresAt: number
   closedAt?: number
@@ -108,11 +122,19 @@ const freeBetaConfig = {
   joinRateWindowSeconds: Number(
     process.env.FREE_BETA_JOIN_RATE_WINDOW_SECONDS ?? 60,
   ),
+  attackUploadRateLimit: Number(
+    process.env.FREE_BETA_ATTACK_UPLOAD_RATE_LIMIT ?? 10,
+  ),
+  attackUploadRateWindowSeconds: Number(
+    process.env.FREE_BETA_ATTACK_UPLOAD_RATE_WINDOW_SECONDS ?? 60,
+  ),
   meetingCreationEnabled:
     process.env.FREE_BETA_MEETING_CREATION_ENABLED !== 'false',
 }
+const maxAttackContentBytes = 3 * 1024 * 1024
 const sessionCookieName = 'meet_meet_sid'
 const roomCodeCharacters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const attackContentDirectory = path.join(os.tmpdir(), 'meet-meet-attack-content')
 const localFrontendOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
@@ -132,8 +154,10 @@ const allowedCorsOrigins = new Set([
 ])
 const anonymousSessions = new Map<string, AnonymousSession>()
 const freeBetaRooms = new Map<string, FreeBetaRoom>()
+const attackContentRecords = new Map<string, AttackContentRecord>()
 const createRateBuckets = new Map<string, number[]>()
 const joinRateBuckets = new Map<string, number[]>()
+const attackUploadRateBuckets = new Map<string, number[]>()
 const cleanupIntervalMs = 60_000
 
 function getErrorDetails(error: unknown) {
@@ -206,6 +230,146 @@ function sendJsonError(
     code,
     message,
   })
+}
+
+function getAttackContentExtension(mimeType: AttackContentRecord['mimeType']) {
+  if (mimeType === 'image/png') {
+    return 'png'
+  }
+
+  if (mimeType === 'image/webp') {
+    return 'webp'
+  }
+
+  return 'jpg'
+}
+
+function detectImageMimeType(fileBuffer: Buffer): AttackContentRecord['mimeType'] | null {
+  if (
+    fileBuffer.length >= 4
+    && fileBuffer[0] === 0xff
+    && fileBuffer[1] === 0xd8
+    && fileBuffer[2] === 0xff
+  ) {
+    return 'image/jpeg'
+  }
+
+  if (
+    fileBuffer.length >= 8
+    && fileBuffer[0] === 0x89
+    && fileBuffer[1] === 0x50
+    && fileBuffer[2] === 0x4e
+    && fileBuffer[3] === 0x47
+    && fileBuffer[4] === 0x0d
+    && fileBuffer[5] === 0x0a
+    && fileBuffer[6] === 0x1a
+    && fileBuffer[7] === 0x0a
+  ) {
+    return 'image/png'
+  }
+
+  if (
+    fileBuffer.length >= 12
+    && fileBuffer.subarray(0, 4).toString('ascii') === 'RIFF'
+    && fileBuffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+
+  return null
+}
+
+function parseMultipartSingleFile(input: {
+  body: Buffer
+  contentType: string
+  fieldName: string
+}): {
+  fileBuffer: Buffer
+  contentType?: string
+} | null {
+  const boundaryMatch = input.contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i)
+  const boundary = boundaryMatch?.[1] ?? boundaryMatch?.[2]
+
+  if (!boundary) {
+    return null
+  }
+
+  const multipartText = input.body.toString('latin1')
+  const parts = multipartText.split(`--${boundary}`)
+    .map((part) => part.replace(/^\r\n/, ''))
+    .filter((part) => part && part !== '--\r\n' && part !== '--')
+
+  for (const part of parts) {
+    const headerEndIndex = part.indexOf('\r\n\r\n')
+
+    if (headerEndIndex === -1) {
+      continue
+    }
+
+    const rawHeaders = part.slice(0, headerEndIndex)
+    const rawBody = part.slice(headerEndIndex + 4).replace(/\r\n$/, '')
+    const disposition = rawHeaders.match(/content-disposition:\s*([^\r\n]+)/i)?.[1]
+    const name = disposition?.match(/name="([^"]+)"/)?.[1]
+    const contentType = rawHeaders.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim()
+
+    if (name !== input.fieldName) {
+      continue
+    }
+
+    return {
+      fileBuffer: Buffer.from(rawBody, 'latin1'),
+      contentType,
+    }
+  }
+
+  return null
+}
+
+async function ensureAttackContentDirectory() {
+  await fs.mkdir(attackContentDirectory, { recursive: true })
+}
+
+async function deleteAttackContent(contentId: string) {
+  const record = attackContentRecords.get(contentId)
+
+  if (!record) {
+    return
+  }
+
+  attackContentRecords.delete(contentId)
+
+  const room = freeBetaRooms.get(record.roomCode)
+  room?.attackContentIds.delete(contentId)
+
+  await fs.unlink(record.filePath).catch((error) => {
+    console.warn('[attack-content] Failed to delete temporary file', {
+      contentId,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  })
+}
+
+async function deleteRoomAttackContent(room: FreeBetaRoom) {
+  await Promise.all(
+    [...room.attackContentIds].map((contentId) => deleteAttackContent(contentId)),
+  )
+}
+
+async function cleanupAttackContentDirectoryOnStart() {
+  await ensureAttackContentDirectory()
+  const entries = await fs.readdir(attackContentDirectory).catch(() => [])
+
+  await Promise.all(entries.map((entry) => (
+    fs.rm(path.join(attackContentDirectory, entry), {
+      force: true,
+      recursive: false,
+    }).catch((error) => {
+      console.warn('[attack-content] Failed to cleanup stale temporary file', {
+        entry,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    })
+  )))
 }
 
 function getLiveKitEnvironment() {
@@ -354,6 +518,7 @@ function cleanupExpiredRooms() {
 
   for (const [roomCode, room] of freeBetaRooms.entries()) {
     if (room.closedAt || room.expiresAt <= now) {
+      void deleteRoomAttackContent(room)
       freeBetaRooms.delete(roomCode)
 
       for (const session of anonymousSessions.values()) {
@@ -385,6 +550,19 @@ function cleanupExpiredRooms() {
       joinRateBuckets.set(ip, active)
     } else {
       joinRateBuckets.delete(ip)
+    }
+  }
+
+  for (const [participantKey, timestamps] of attackUploadRateBuckets.entries()) {
+    const active = timestamps.filter(
+      (timestamp) =>
+        now - timestamp
+        < freeBetaConfig.attackUploadRateWindowSeconds * 1000,
+    )
+    if (active.length) {
+      attackUploadRateBuckets.set(participantKey, active)
+    } else {
+      attackUploadRateBuckets.delete(participantKey)
     }
   }
 }
@@ -436,6 +614,172 @@ app.use(cors({
   },
   credentials: true,
 }))
+
+app.post(
+  '/api/free-beta/rooms/:roomCode/attack-content',
+  express.raw({
+    type: (request) => (
+      typeof request.headers['content-type'] === 'string'
+      && request.headers['content-type'].toLowerCase().startsWith('multipart/form-data')
+    ),
+    limit: maxAttackContentBytes + 1024 * 64,
+  }),
+  async (request, response) => {
+    cleanupExpiredRooms()
+
+    const session = getSession(request, response)
+    const normalizedRoomCode = request.params.roomCode.trim().toUpperCase()
+    const room = freeBetaRooms.get(normalizedRoomCode)
+
+    if (!room || room.closedAt || room.expiresAt <= Date.now()) {
+      sendJsonError(
+        response,
+        404,
+        'ROOM_NOT_FOUND',
+        '존재하지 않거나 만료된 방입니다.',
+      )
+      return
+    }
+
+    const sessionParticipant = [...room.participants.values()].find(
+      (participant) => participant.sessionId === session.id,
+    )
+
+    if (!sessionParticipant) {
+      sendJsonError(
+        response,
+        403,
+        'SESSION_NOT_IN_ROOM',
+        '이 세션은 해당 방에 입장되어 있지 않습니다.',
+      )
+      return
+    }
+
+    if (
+      isRateLimited(
+        attackUploadRateBuckets,
+        `${room.roomCode}:${sessionParticipant.identity}`,
+        freeBetaConfig.attackUploadRateLimit,
+        freeBetaConfig.attackUploadRateWindowSeconds,
+      )
+    ) {
+      sendJsonError(
+        response,
+        429,
+        'ATTACK_UPLOAD_RATE_LIMITED',
+        '이미지 업로드 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.',
+      )
+      return
+    }
+
+    const body = Buffer.isBuffer(request.body) ? request.body : null
+    const contentType = request.headers['content-type']
+
+    if (!body || typeof contentType !== 'string') {
+      sendJsonError(
+        response,
+        400,
+        'INVALID_MULTIPART_REQUEST',
+        'multipart/form-data file field is required.',
+      )
+      return
+    }
+
+    const parsedFile = parseMultipartSingleFile({
+      body,
+      contentType,
+      fieldName: 'file',
+    })
+
+    if (!parsedFile || parsedFile.fileBuffer.length === 0) {
+      sendJsonError(
+        response,
+        400,
+        'ATTACK_CONTENT_FILE_REQUIRED',
+        '이미지 파일을 선택해주세요.',
+      )
+      return
+    }
+
+    if (parsedFile.fileBuffer.byteLength > maxAttackContentBytes) {
+      sendJsonError(
+        response,
+        413,
+        'ATTACK_CONTENT_TOO_LARGE',
+        '이미지는 최대 3MB까지 업로드할 수 있습니다.',
+      )
+      return
+    }
+
+    const detectedMimeType = detectImageMimeType(parsedFile.fileBuffer)
+
+    if (
+      !detectedMimeType
+      || (
+        parsedFile.contentType
+        && parsedFile.contentType !== detectedMimeType
+      )
+    ) {
+      sendJsonError(
+        response,
+        415,
+        'ATTACK_CONTENT_UNSUPPORTED_TYPE',
+        'JPEG, PNG, WebP 이미지만 업로드할 수 있습니다.',
+      )
+      return
+    }
+
+    try {
+      await ensureAttackContentDirectory()
+
+      const previousContentIds = [...attackContentRecords.values()]
+        .filter((record) => (
+          record.roomCode === room.roomCode
+          && record.uploaderParticipantIdentity === sessionParticipant.identity
+        ))
+        .map((record) => record.contentId)
+
+      await Promise.all(previousContentIds.map(deleteAttackContent))
+
+      const contentId = crypto.randomUUID()
+      const filePath = path.join(
+        attackContentDirectory,
+        `${contentId}.${getAttackContentExtension(detectedMimeType)}`,
+      )
+      const now = Date.now()
+      const record: AttackContentRecord = {
+        contentId,
+        roomCode: room.roomCode,
+        filePath,
+        mimeType: detectedMimeType,
+        size: parsedFile.fileBuffer.byteLength,
+        uploaderParticipantIdentity: sessionParticipant.identity,
+        createdAt: now,
+      }
+
+      await fs.writeFile(filePath, parsedFile.fileBuffer, { flag: 'wx' })
+      attackContentRecords.set(contentId, record)
+      room.attackContentIds.add(contentId)
+
+      response.json({
+        contentId,
+        mimeType: record.mimeType,
+        size: record.size,
+        uploaderParticipantIdentity: record.uploaderParticipantIdentity,
+        roomCode: record.roomCode,
+        createdAt: new Date(record.createdAt).toISOString(),
+      })
+    } catch (error) {
+      console.error('[attack-content] Failed to store temporary image', getErrorDetails(error))
+      sendJsonError(
+        response,
+        500,
+        'ATTACK_CONTENT_STORE_FAILED',
+        '이미지를 저장하지 못했습니다.',
+      )
+    }
+  },
+)
 app.use(express.json({ limit: '32kb' }))
 
 app.get('/api/health', (_request, response) => {
@@ -459,6 +803,121 @@ app.get('/api/health', (_request, response) => {
       roomDurationMinutes: freeBetaConfig.roomDurationMinutes,
     },
   })
+})
+
+function getAccessibleAttackContent(
+  request: express.Request,
+  response: express.Response,
+): {
+  record: AttackContentRecord
+  room: FreeBetaRoom
+} | null {
+  cleanupExpiredRooms()
+
+  const session = getSession(request, response)
+  const rawContentId = request.params.contentId
+  const contentId = Array.isArray(rawContentId) ? rawContentId[0] : rawContentId
+
+  if (typeof contentId !== 'string' || !contentId.trim()) {
+    sendJsonError(
+      response,
+      400,
+      'ATTACK_CONTENT_ID_REQUIRED',
+      'contentId is required.',
+    )
+    return null
+  }
+
+  const record = attackContentRecords.get(contentId)
+
+  if (!record) {
+    sendJsonError(
+      response,
+      404,
+      'ATTACK_CONTENT_NOT_FOUND',
+      '공격 이미지를 찾을 수 없습니다.',
+    )
+    return null
+  }
+
+  const room = freeBetaRooms.get(record.roomCode)
+
+  if (!room || room.closedAt || room.expiresAt <= Date.now()) {
+    sendJsonError(
+      response,
+      404,
+      'ROOM_NOT_FOUND',
+      '존재하지 않거나 만료된 방입니다.',
+    )
+    return null
+  }
+
+  const sessionParticipant = [...room.participants.values()].find(
+    (participant) => participant.sessionId === session.id,
+  )
+
+  if (!sessionParticipant) {
+    sendJsonError(
+      response,
+      403,
+      'ATTACK_CONTENT_FORBIDDEN',
+      '이 공격 이미지에 접근할 수 없습니다.',
+    )
+    return null
+  }
+
+  return {
+    record,
+    room,
+  }
+}
+
+app.get('/api/free-beta/attack-content/:contentId/meta', (request, response) => {
+  const access = getAccessibleAttackContent(request, response)
+
+  if (!access) {
+    return
+  }
+
+  const { record } = access
+
+  response.setHeader('Cache-Control', 'no-store')
+  response.json({
+    contentId: record.contentId,
+    mimeType: record.mimeType,
+    size: record.size,
+    uploaderParticipantIdentity: record.uploaderParticipantIdentity,
+    roomCode: record.roomCode,
+    createdAt: new Date(record.createdAt).toISOString(),
+  })
+})
+
+app.get('/api/free-beta/attack-content/:contentId', async (request, response) => {
+  const access = getAccessibleAttackContent(request, response)
+
+  if (!access) {
+    return
+  }
+
+  const { record } = access
+
+  try {
+    const fileBuffer = await fs.readFile(record.filePath)
+    response.setHeader('Cache-Control', 'no-store')
+    response.type(record.mimeType)
+    response.send(fileBuffer)
+  } catch (error) {
+    console.warn('[attack-content] Failed to read temporary image', {
+      contentId: record.contentId,
+      message: error instanceof Error ? error.message : String(error),
+    })
+    sendJsonError(
+      response,
+      404,
+      'ATTACK_CONTENT_NOT_FOUND',
+      '공격 이미지를 찾을 수 없습니다.',
+    )
+  }
 })
 
 app.post('/api/free-beta/rooms', async (request, response) => {
@@ -575,6 +1034,7 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       hostParticipantIdentity: hostIdentity,
       hostControlTokenHash: hashHostControlToken(hostControlToken),
       participants: new Map([[hostIdentity, participant]]),
+      attackContentIds: new Set(),
       createdAt: now,
       expiresAt,
     }
@@ -1082,6 +1542,7 @@ app.post('/api/free-beta/rooms/end', (request, response) => {
   }
 
   room.closedAt = Date.now()
+  void deleteRoomAttackContent(room)
 
   for (const session of anonymousSessions.values()) {
     session.activeRoomCodes.delete(room.roomCode)
@@ -1208,6 +1669,12 @@ app.post('/api/translate', async (request, response) => {
       status: details.status,
     })
   }
+})
+
+void cleanupAttackContentDirectoryOnStart().catch((error) => {
+  console.warn('[attack-content] Failed to cleanup temporary directory on start', {
+    message: error instanceof Error ? error.message : String(error),
+  })
 })
 
 const server = app.listen(port, () => {

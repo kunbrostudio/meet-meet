@@ -6824,6 +6824,83 @@
   font-weight: 800;
 }
 
+.meeting-page .game-attack-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.meeting-page .game-attack-upload-zone {
+  display: grid;
+  width: min(320px, 100%);
+  min-height: 76px;
+  place-items: center;
+  padding: 12px;
+  border: 1px dashed rgba(99, 241, 255, 0.42);
+  border-radius: 12px;
+  color: var(--mm-arcade-text);
+  background: rgba(4, 10, 24, 0.78);
+  cursor: pointer;
+}
+
+.meeting-page .game-attack-upload-zone:hover,
+.meeting-page .game-attack-upload-zone:focus-visible {
+  border-color: rgba(255, 61, 198, 0.68);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 61, 198, 0.16);
+}
+
+.meeting-page .game-attack-upload-zone[aria-disabled="true"] {
+  cursor: progress;
+  color: var(--mm-arcade-muted);
+}
+
+.meeting-page .game-attack-upload-message,
+.meeting-page .game-attack-content-ready {
+  margin: 0;
+  color: #bcd3e7;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.meeting-page .game-attack-content-ready {
+  color: var(--mm-arcade-cyan);
+}
+
+.meeting-page .game-attack-local-preview,
+.meeting-page .game-attack-image-frame {
+  display: grid;
+  width: min(360px, 100%);
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(99, 241, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(2, 8, 22, 0.9);
+}
+
+.meeting-page .game-attack-local-preview img,
+.meeting-page .game-attack-image-frame img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  background: #020816;
+}
+
+.meeting-page .game-attack-local-preview figcaption {
+  padding: 7px 10px;
+  overflow: hidden;
+  color: var(--mm-arcade-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes countdown-pop {
   from {
     opacity: 0;

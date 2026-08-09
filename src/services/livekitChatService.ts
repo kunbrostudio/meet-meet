@@ -1,5 +1,7 @@
 import type { ChatMessage } from '../types/chat'
 import type {
+  GameAttackContent,
+  GameAttackContentSubmitRequest,
   GameAttackStartRequest,
   GameReadyChange,
   GameStateRequest,
@@ -106,6 +108,10 @@ export type LiveKitDataMessage =
   | {
       type: 'attack-start-request'
       payload: GameAttackStartRequest
+    }
+  | {
+      type: 'attack-content-submit-request'
+      payload: GameAttackContentSubmitRequest
     }
 
 const encoder = new TextEncoder()
@@ -266,6 +272,7 @@ export function decodeLiveKitDataMessage(
         && message.type !== 'game-state-request'
         && message.type !== 'game-ready-change'
         && message.type !== 'attack-start-request'
+        && message.type !== 'attack-content-submit-request'
       )
       || (
         message.type === 'meeting-ended'
@@ -280,6 +287,8 @@ export function decodeLiveKitDataMessage(
             ? !isGameReadyChange(message.payload)
           : message.type === 'attack-start-request'
             ? !isGameAttackStartRequest(message.payload)
+          : message.type === 'attack-content-submit-request'
+            ? !isGameAttackContentSubmitRequest(message.payload)
           : message.type === 'transcript-created'
             ? !isLiveKitTranscriptPayload(message.payload)
               && !isTranscript(message.payload)
@@ -585,6 +594,11 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       snapshot.hostParticipantIdentity === undefined
       || typeof snapshot.hostParticipantIdentity === 'string'
     )
+    && (
+      snapshot.attackContent === undefined
+      || snapshot.attackContent === null
+      || isGameAttackContent(snapshot.attackContent)
+    )
     && Array.isArray(snapshot.participants)
     && snapshot.participants.every((participant) => (
       typeof participant === 'object'
@@ -603,6 +617,31 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       && typeof participant.isReady === 'boolean'
     ))
     && typeof snapshot.updatedAt === 'string'
+  )
+}
+
+function isGameAttackContent(value: unknown): value is GameAttackContent {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const attackContent = value as Partial<GameAttackContent>
+  return (
+    typeof attackContent.contentId === 'string'
+    && (
+      attackContent.mimeType === 'image/jpeg'
+      || attackContent.mimeType === 'image/png'
+      || attackContent.mimeType === 'image/webp'
+    )
+    && typeof attackContent.size === 'number'
+    && Number.isFinite(attackContent.size)
+    && typeof attackContent.uploaderParticipantIdentity === 'string'
+    && typeof attackContent.roomCode === 'string'
+    && typeof attackContent.roundNumber === 'number'
+    && Number.isFinite(attackContent.roundNumber)
+    && typeof attackContent.version === 'number'
+    && Number.isFinite(attackContent.version)
+    && typeof attackContent.createdAt === 'string'
   )
 }
 
@@ -665,6 +704,32 @@ function isGameAttackStartRequest(
   )
 }
 
+function isGameAttackContentSubmitRequest(
+  value: unknown,
+): value is GameAttackContentSubmitRequest {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const request = value as Partial<GameAttackContentSubmitRequest>
+  return (
+    request.type === 'attack-content-submit-request'
+    && typeof request.meetingId === 'string'
+    && typeof request.roomCode === 'string'
+    && typeof request.contentId === 'string'
+    && typeof request.roundNumber === 'number'
+    && Number.isFinite(request.roundNumber)
+    && (
+      request.attackSequence === undefined
+      || (
+        typeof request.attackSequence === 'number'
+        && Number.isFinite(request.attackSequence)
+      )
+    )
+    && typeof request.requestedAt === 'string'
+  )
+}
+
 function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
   return (
     value === 'waiting'
@@ -675,6 +740,7 @@ function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
     || value === 'attack-ready'
     || value === 'attack-active'
     || value === 'attack-ended'
+    || value === 'round-ended'
     || value === 'attack-prep'
     || value === 'attacking'
     || value === 'judging'

@@ -3,7 +3,11 @@ import type {
   GameAttackContent,
   GameAttackContentSubmitRequest,
   GameAttackStartRequest,
+  GameFairPlayCheckStatus,
+  GameFairPlayEventRequest,
+  GamePlayerState,
   GameReadyChange,
+  GameRoundResult,
   GameStateRequest,
   GameStateSnapshot,
 } from '../types/game'
@@ -64,8 +68,19 @@ export type LiveKitParticipantKickedPayload = {
   targetParticipantIdentity: string
   removedByParticipantIdentity: string
   removedByName: string
-  reason: 'removed_by_host'
+  reason: 'removed_by_host' | 'eliminated'
   timestamp: string
+}
+
+export type LiveKitHostChangedPayload = {
+  meetingId: string
+  roomName: string
+  previousHostParticipantIdentity: string
+  newHostParticipantIdentity: string
+  newHostName: string
+  newHostControlToken?: string
+  changedAt: string
+  reason: 'host_eliminated' | 'host_left'
 }
 
 export type LiveKitDataMessage =
@@ -94,6 +109,10 @@ export type LiveKitDataMessage =
       payload: LiveKitParticipantKickedPayload
     }
   | {
+      type: 'host-changed'
+      payload: LiveKitHostChangedPayload
+    }
+  | {
       type: 'game-state-snapshot'
       payload: GameStateSnapshot
     }
@@ -112,6 +131,14 @@ export type LiveKitDataMessage =
   | {
       type: 'attack-content-submit-request'
       payload: GameAttackContentSubmitRequest
+    }
+  | {
+      type: 'fair-play-event-request'
+      payload: GameFairPlayEventRequest
+    }
+  | {
+      type: 'fair-play-check-status'
+      payload: GameFairPlayCheckStatus
     }
 
 const encoder = new TextEncoder()
@@ -268,17 +295,22 @@ export function decodeLiveKitDataMessage(
         && message.type !== 'translation'
         && message.type !== 'meeting-ended'
         && message.type !== 'participant-kicked'
+        && message.type !== 'host-changed'
         && message.type !== 'game-state-snapshot'
         && message.type !== 'game-state-request'
         && message.type !== 'game-ready-change'
         && message.type !== 'attack-start-request'
         && message.type !== 'attack-content-submit-request'
+        && message.type !== 'fair-play-event-request'
+        && message.type !== 'fair-play-check-status'
       )
       || (
         message.type === 'meeting-ended'
           ? !isMeetingEndedPayload(message.payload)
           : message.type === 'participant-kicked'
             ? !isParticipantKickedPayload(message.payload)
+          : message.type === 'host-changed'
+            ? !isHostChangedPayload(message.payload)
           : message.type === 'game-state-snapshot'
             ? !isGameStateSnapshot(message.payload)
           : message.type === 'game-state-request'
@@ -289,6 +321,10 @@ export function decodeLiveKitDataMessage(
             ? !isGameAttackStartRequest(message.payload)
           : message.type === 'attack-content-submit-request'
             ? !isGameAttackContentSubmitRequest(message.payload)
+          : message.type === 'fair-play-event-request'
+            ? !isGameFairPlayEventRequest(message.payload)
+          : message.type === 'fair-play-check-status'
+            ? !isGameFairPlayCheckStatus(message.payload)
           : message.type === 'transcript-created'
             ? !isLiveKitTranscriptPayload(message.payload)
               && !isTranscript(message.payload)
@@ -460,7 +496,10 @@ function isParticipantKickedPayload(
     && typeof payload.targetParticipantIdentity === 'string'
     && typeof payload.removedByParticipantIdentity === 'string'
     && typeof payload.removedByName === 'string'
-    && payload.reason === 'removed_by_host'
+    && (
+      payload.reason === 'removed_by_host'
+      || payload.reason === 'eliminated'
+    )
     && typeof payload.timestamp === 'string'
   )
 }
@@ -479,6 +518,32 @@ function isMeetingEndedPayload(
     && typeof payload.endedByParticipantIdentity === 'string'
     && typeof payload.endedByName === 'string'
     && typeof payload.endedAt === 'string'
+  )
+}
+
+function isHostChangedPayload(
+  value: unknown,
+): value is LiveKitHostChangedPayload {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const payload = value as Partial<LiveKitHostChangedPayload>
+  return (
+    typeof payload.meetingId === 'string'
+    && typeof payload.roomName === 'string'
+    && typeof payload.previousHostParticipantIdentity === 'string'
+    && typeof payload.newHostParticipantIdentity === 'string'
+    && typeof payload.newHostName === 'string'
+    && (
+      payload.newHostControlToken === undefined
+      || typeof payload.newHostControlToken === 'string'
+    )
+    && typeof payload.changedAt === 'string'
+    && (
+      payload.reason === 'host_eliminated'
+      || payload.reason === 'host_left'
+    )
   )
 }
 
@@ -501,6 +566,24 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
     && Number.isFinite(snapshot.connectedParticipantCount)
     && typeof snapshot.readyParticipantCount === 'number'
     && Number.isFinite(snapshot.readyParticipantCount)
+    && (
+      snapshot.initialLives === undefined
+      || snapshot.initialLives === 1
+      || snapshot.initialLives === 3
+      || snapshot.initialLives === 5
+    )
+    && (
+      snapshot.autoStartAt === undefined
+      || typeof snapshot.autoStartAt === 'string'
+    )
+    && (
+      snapshot.gameOverAt === undefined
+      || typeof snapshot.gameOverAt === 'string'
+    )
+    && (
+      snapshot.postGameAt === undefined
+      || typeof snapshot.postGameAt === 'string'
+    )
     && (
       snapshot.countdownStartedAt === undefined
       || typeof snapshot.countdownStartedAt === 'string'
@@ -584,6 +667,11 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       || typeof snapshot.attackEndsAt === 'string'
     )
     && (
+      snapshot.attackEndReason === undefined
+      || snapshot.attackEndReason === 'all-defenders-hit'
+      || snapshot.attackEndReason === 'timeout'
+    )
+    && (
       snapshot.attackSequence === undefined
       || (
         typeof snapshot.attackSequence === 'number'
@@ -598,6 +686,31 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       snapshot.attackContent === undefined
       || snapshot.attackContent === null
       || isGameAttackContent(snapshot.attackContent)
+    )
+    && (
+      snapshot.playerStates === undefined
+      || isGamePlayerStates(snapshot.playerStates)
+    )
+    && (
+      snapshot.roundResult === undefined
+      || snapshot.roundResult === null
+      || isGameRoundResult(snapshot.roundResult)
+    )
+    && (
+      snapshot.fairPlay === undefined
+      || (
+        typeof snapshot.fairPlay === 'object'
+        && snapshot.fairPlay !== null
+      )
+    )
+    && (
+      snapshot.penalizedParticipantIdentitiesForCurrentAttack === undefined
+      || (
+        Array.isArray(snapshot.penalizedParticipantIdentitiesForCurrentAttack)
+        && snapshot.penalizedParticipantIdentitiesForCurrentAttack.every(
+          (participantIdentity) => typeof participantIdentity === 'string',
+        )
+      )
     )
     && Array.isArray(snapshot.participants)
     && snapshot.participants.every((participant) => (
@@ -617,6 +730,61 @@ function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
       && typeof participant.isReady === 'boolean'
     ))
     && typeof snapshot.updatedAt === 'string'
+  )
+}
+
+function isGamePlayerStates(
+  value: unknown,
+): value is Record<string, GamePlayerState> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  return Object.entries(value).every(([participantIdentity, playerState]) => (
+    typeof participantIdentity === 'string'
+    && typeof playerState === 'object'
+    && playerState !== null
+    && typeof (playerState as Partial<GamePlayerState>).lives === 'number'
+    && Number.isFinite((playerState as Partial<GamePlayerState>).lives)
+    && typeof (playerState as Partial<GamePlayerState>).eliminated === 'boolean'
+  ))
+}
+
+function isGameRoundResult(value: unknown): value is GameRoundResult {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const result = value as Partial<GameRoundResult>
+  return (
+    typeof result.roundNumber === 'number'
+    && Number.isFinite(result.roundNumber)
+    && (
+      result.attackSequence === undefined
+      || (
+        typeof result.attackSequence === 'number'
+        && Number.isFinite(result.attackSequence)
+      )
+    )
+    && (
+      result.attackerIdentity === undefined
+      || typeof result.attackerIdentity === 'string'
+    )
+    && Array.isArray(result.laughedParticipantIdentities)
+    && result.laughedParticipantIdentities.every(
+      (participantIdentity) => typeof participantIdentity === 'string',
+    )
+    && Array.isArray(result.lifeChanges)
+    && result.lifeChanges.every((change) => (
+      typeof change === 'object'
+      && change !== null
+      && typeof change.participantIdentity === 'string'
+      && typeof change.previousLives === 'number'
+      && Number.isFinite(change.previousLives)
+      && typeof change.currentLives === 'number'
+      && Number.isFinite(change.currentLives)
+      && typeof change.eliminated === 'boolean'
+    ))
   )
 }
 
@@ -734,18 +902,107 @@ function isGamePhase(value: unknown): value is GameStateSnapshot['phase'] {
   return (
     value === 'waiting'
     || value === 'ready'
+    || value === 'auto-start-pending'
+    || value === 'fair-play-check'
     || value === 'countdown'
     || value === 'game-started'
     || value === 'role-reveal'
     || value === 'attack-ready'
     || value === 'attack-active'
     || value === 'attack-ended'
+    || value === 'round-result'
     || value === 'round-ended'
+    || value === 'game-over'
+    || value === 'post-game'
     || value === 'attack-prep'
     || value === 'attacking'
-    || value === 'judging'
     || value === 'turn-result'
     || value === 'game-result'
+  )
+}
+
+function isGameFairPlayEventRequest(
+  value: unknown,
+): value is GameFairPlayEventRequest {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const request = value as Partial<GameFairPlayEventRequest>
+  return (
+    request.type === 'fair-play-event-request'
+    && typeof request.meetingId === 'string'
+    && typeof request.roomCode === 'string'
+    && typeof request.eventId === 'string'
+    && (
+      request.reason === 'visible-laugh'
+      || request.reason === 'multimodal-laugh'
+      || request.reason === 'audio-laugh'
+      || request.reason === 'occluded-audio-laugh'
+      || request.reason === 'hidden-audio-laugh'
+      || request.reason === 'mouth-occlusion-timeout'
+      || request.reason === 'face-not-visible-timeout'
+    )
+    && typeof request.roundNumber === 'number'
+    && Number.isFinite(request.roundNumber)
+    && (
+      request.attackSequence === undefined
+      || (
+        typeof request.attackSequence === 'number'
+        && Number.isFinite(request.attackSequence)
+      )
+    )
+    && typeof request.detectorVersion === 'string'
+    && typeof request.detectedAt === 'string'
+  )
+}
+
+function isGameFairPlayCheckStatus(
+  value: unknown,
+): value is GameFairPlayCheckStatus {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const status = value as Partial<GameFairPlayCheckStatus>
+  return (
+    status.type === 'fair-play-check-status'
+    && typeof status.meetingId === 'string'
+    && typeof status.roomCode === 'string'
+    && typeof status.participantIdentity === 'string'
+    && (
+      status.participantName === undefined
+      || typeof status.participantName === 'string'
+    )
+    && typeof status.cameraReady === 'boolean'
+    && typeof status.faceReady === 'boolean'
+    && typeof status.mouthReady === 'boolean'
+    && typeof status.smileReady === 'boolean'
+    && typeof status.passed === 'boolean'
+    && typeof status.failed === 'boolean'
+    && (
+      status.step === 'camera'
+      || status.step === 'face'
+      || status.step === 'mouth'
+      || status.step === 'smile'
+      || status.step === 'passed'
+    )
+    && typeof status.message === 'string'
+    && (
+      status.checkVersion === undefined
+      || (
+        typeof status.checkVersion === 'number'
+        && Number.isFinite(status.checkVersion)
+      )
+    )
+    && (
+      status.calibrationVersion === undefined
+      || (
+        typeof status.calibrationVersion === 'number'
+        && Number.isFinite(status.calibrationVersion)
+      )
+    )
+    && typeof status.updatedAt === 'string'
   )
 }
 

@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef } from 'react'
+import type { GamePlayerState } from '../../types/game'
 import type { Participant } from '../../types/participant'
 import { Icon } from '../common/Icon'
 
@@ -8,6 +9,9 @@ type ParticipantGameCardProps = {
   isReady?: boolean
   gameRole?: 'attacker' | 'defender'
   isAttackActive?: boolean
+  playerState?: GamePlayerState
+  maxLives?: number
+  isFairPlayWarning?: boolean
   onSelect?: () => void
   onReconnectMedia?: () => void
 }
@@ -65,6 +69,9 @@ function ParticipantGameCardComponent({
   isReady = false,
   gameRole,
   isAttackActive = false,
+  playerState,
+  maxLives = 3,
+  isFairPlayWarning = false,
   onSelect,
   onReconnectMedia,
 }: ParticipantGameCardProps) {
@@ -85,6 +92,8 @@ function ParticipantGameCardComponent({
         gameRole === 'attacker' ? 'is-attacker' : '',
         gameRole === 'defender' ? 'is-defender' : '',
         gameRole === 'attacker' && isAttackActive ? 'is-active-attacker' : '',
+        playerState?.eliminated ? 'is-eliminated' : '',
+        isFairPlayWarning ? 'is-fair-play-warning' : '',
       ].filter(Boolean).join(' ')}
       style={{ background: participant.avatarColor }}
       onClick={onSelect}
@@ -141,6 +150,16 @@ function ParticipantGameCardComponent({
           <Icon name={participant.isMicOn ? 'mic' : 'mic-off'} size={13} />
         </span>
       </div>
+      {playerState && (
+        <div className="participant-life-hud" aria-label={`Life ${playerState.lives}`}>
+          <span>
+            {Array.from({ length: maxLives }, (_, index) => (
+              <b key={index}>{index < playerState.lives ? '♥' : '♡'}</b>
+            ))}
+          </span>
+          {playerState.eliminated && <em>ELIMINATED</em>}
+        </div>
+      )}
       <div className="participant-game-status-slot" aria-hidden="true">
         {gameRole === 'attacker' ? (
           <span className="participant-role-badge is-attacker">
@@ -164,6 +183,7 @@ export const ParticipantGameCard = memo(
     previous.participant.id === next.participant.id
     && previous.participant.liveKitIdentity === next.participant.liveKitIdentity
     && previous.participant.name === next.participant.name
+    && previous.participant.meetingRole === next.participant.meetingRole
     && previous.participant.isCameraOn === next.participant.isCameraOn
     && previous.participant.isMicOn === next.participant.isMicOn
     && previous.participant.isSpeaking === next.participant.isSpeaking
@@ -176,5 +196,8 @@ export const ParticipantGameCard = memo(
     && previous.isReady === next.isReady
     && previous.gameRole === next.gameRole
     && previous.isAttackActive === next.isAttackActive
+    && previous.playerState?.lives === next.playerState?.lives
+    && previous.playerState?.eliminated === next.playerState?.eliminated
+    && previous.isFairPlayWarning === next.isFairPlayWarning
   ),
 )

@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ChatMessage } from '../../types/chat'
-import type { GameAttackContent, GamePhase } from '../../types/game'
+import type {
+  GameAttackContent,
+  GameFairPlayCheckParticipantStatus,
+  GameFairPlayEventRecord,
+  GamePhase,
+  GamePlayerState,
+  GameRoundResult,
+  GameTimelineEvent,
+} from '../../types/game'
+import type {
+  FairPlayDebugState,
+  FairPlayWarningState,
+} from '../../services/fairPlayDetectorService'
+import type { AudioLaughDebugState } from '../../services/audioLaughDetectorService'
 import {
   ATTACK_CONTENT_ACCEPT,
   downloadAttackContentBlob,
@@ -14,6 +27,7 @@ type GameBoardProps = {
   phase?: GamePhase
   statusText?: string
   chatMessages: ChatMessage[]
+  timelineEvents?: GameTimelineEvent[]
   localParticipantId?: number
   onSendChatMessage: (message: string) => void | Promise<void>
   canSendChatMessage?: boolean
@@ -23,13 +37,32 @@ type GameBoardProps = {
   countdownDurationMs?: number
   attackEndsAt?: string
   attackDurationMs?: number
+  attackEndReason?: 'all-defenders-hit' | 'timeout'
   attackContent?: GameAttackContent | null
   roundNumber?: number
+  activePlayerIdentities?: string[]
+  attackSequence?: number
+  maxLives?: number
   attackerName?: string
+  participantNamesByIdentity?: Record<string, string>
+  playerStates?: Record<string, GamePlayerState>
+  roundResult?: GameRoundResult | null
+  fairPlayCheckParticipants?: GameFairPlayCheckParticipantStatus[]
+  localFairPlayCheckStatus?: GameFairPlayCheckParticipantStatus
+  fairPlayWarning?: FairPlayWarningState
+  fairPlayLastEvent?: GameFairPlayEventRecord
+  fairPlayDamageLocked?: boolean
+  isAudioFairPlayActive?: boolean
+  audioFairPlayDebug?: AudioLaughDebugState | null
+  audioFairPlayUnavailableReason?: string
+  fairPlayDebug?: FairPlayDebugState | null
+  winnerName?: string
   localGameRole?: 'attacker' | 'defender'
   readyStatusText?: string
   isLocalReady?: boolean
   canToggleReady?: boolean
+  autoReadyRemainingSeconds?: number | null
+  autoStartRemainingSeconds?: number | null
   isHost?: boolean
   canStartGame?: boolean
   canRequestAttackStart?: boolean
@@ -39,6 +72,7 @@ type GameBoardProps = {
   onStartGame?: () => void
   onUploadAttackContent?: (file: File) => void | Promise<void>
   onRequestAttackStart?: () => void
+  onStartNextRound?: () => void
 }
 
 type AttackImageState =
@@ -51,6 +85,7 @@ export function GameBoard({
   phase = 'waiting',
   statusText,
   chatMessages,
+  timelineEvents,
   localParticipantId,
   onSendChatMessage,
   canSendChatMessage,
@@ -60,13 +95,32 @@ export function GameBoard({
   countdownDurationMs = 3000,
   attackEndsAt,
   attackDurationMs = 30000,
+  attackEndReason,
   attackContent,
   roundNumber,
+  activePlayerIdentities = [],
+  attackSequence,
+  maxLives = 3,
   attackerName,
+  participantNamesByIdentity = {},
+  playerStates = {},
+  roundResult,
+  fairPlayCheckParticipants = [],
+  localFairPlayCheckStatus,
+  fairPlayWarning,
+  fairPlayLastEvent,
+  fairPlayDamageLocked = false,
+  isAudioFairPlayActive = false,
+  audioFairPlayDebug,
+  audioFairPlayUnavailableReason,
+  fairPlayDebug,
+  winnerName,
   localGameRole,
   readyStatusText,
   isLocalReady = false,
   canToggleReady = false,
+  autoReadyRemainingSeconds,
+  autoStartRemainingSeconds,
   isHost = false,
   canStartGame = false,
   canRequestAttackStart = false,
@@ -76,9 +130,17 @@ export function GameBoard({
   onStartGame,
   onUploadAttackContent,
   onRequestAttackStart,
+  onStartNextRound,
 }: GameBoardProps) {
-  const isCountdown = phase === 'countdown'
+  const isAutoStartPending = phase === 'auto-start-pending'
+  const isCountdown = phase === 'countdown' || isAutoStartPending
   const isAttackActive = phase === 'attack-active'
+  const isPreGamePhase =
+    phase === 'waiting'
+    || phase === 'ready'
+    || phase === 'post-game'
+  const shouldShowFairPlayCheck = false
+  const shouldShowChatTimeline = isPreGamePhase
   const [countdownNow, setCountdownNow] = useState(() => Date.now())
   const [attackNow, setAttackNow] = useState(() => Date.now())
   const [localPreview, setLocalPreview] = useState<{
@@ -134,6 +196,30 @@ export function GameBoard({
     attackContent
       ? `${attackContent.contentId}:${attackContent.version}`
       : ''
+  const remoteFairPlayStatuses = useMemo(() => (
+    fairPlayCheckParticipants.filter((status) => (
+      status.participantIdentity
+        !== localFairPlayCheckStatus?.participantIdentity
+    ))
+  ), [
+    fairPlayCheckParticipants,
+    localFairPlayCheckStatus?.participantIdentity,
+  ])
+  const finalPlayerResults = useMemo(() => (
+    activePlayerIdentities.map((participantIdentity) => ({
+      participantIdentity,
+      displayName:
+        participantNamesByIdentity[participantIdentity]
+        ?? participantIdentity,
+      lives: playerStates[participantIdentity]?.lives ?? maxLives,
+      eliminated: playerStates[participantIdentity]?.eliminated ?? false,
+    }))
+  ), [
+    activePlayerIdentities,
+    maxLives,
+    participantNamesByIdentity,
+    playerStates,
+  ])
 
   const handleAttackFile = (file: File | undefined) => {
     if (!file || !onUploadAttackContent || isUploadingAttackContent) {
@@ -152,6 +238,15 @@ export function GameBoard({
     })
     void onUploadAttackContent(file)
   }
+
+  const renderLives = (lives: number) => (
+    <span className="game-life-hearts" aria-label={`Life ${lives}`}>
+      {Array.from({ length: maxLives }, (_, index) => (
+        <span key={index}>{index < lives ? '♥' : '♡'}</span>
+      ))}
+    </span>
+  )
+
 
   useEffect(() => {
     if (!isCountdown || !countdownStartedAt) {
@@ -298,10 +393,100 @@ export function GameBoard({
   }
 
   return (
-    <section className="game-board" aria-label="GAME BOARD">
+    <section
+      className={[
+        'game-board',
+        shouldShowChatTimeline ? '' : 'is-gameplay-focused',
+      ].filter(Boolean).join(' ')}
+      aria-label="GAME BOARD"
+    >
       <GameBoardHeader phase={phase} statusText={statusText} />
       <div className="game-board-ready-panel">
-        {isCountdown ? (
+        {isAutoStartPending ? (
+          <div className="game-countdown-panel is-auto-start" aria-live="polite">
+            <p>ROOM FULL</p>
+            <strong>게임을 준비합니다.</strong>
+            <span key={countdownLabel}>{countdownLabel}</span>
+          </div>
+        ) : shouldShowFairPlayCheck ? (
+          <div className="game-fair-play-check-panel" aria-live="polite">
+            <div className="game-fair-play-local">
+              <p>FAIR PLAY CHECK</p>
+              <strong>
+                {localFairPlayCheckStatus?.message
+                  ?? '카메라를 켜고 얼굴을 보여주세요.'}
+              </strong>
+              <div className="game-fair-play-check-steps" aria-label="Fair play check steps">
+                <span className={
+                  localFairPlayCheckStatus?.cameraReady ? 'is-passed' : ''
+                }>
+                  CAMERA
+                </span>
+                <span className={
+                  localFairPlayCheckStatus?.faceReady ? 'is-passed' : ''
+                }>
+                  FACE
+                </span>
+                <span className={
+                  localFairPlayCheckStatus?.mouthReady ? 'is-passed' : ''
+                }>
+                  MOUTH
+                </span>
+                <span className={
+                  localFairPlayCheckStatus?.smileReady ? 'is-passed' : ''
+                }>
+                  SMILE
+                </span>
+              </div>
+            </div>
+            {remoteFairPlayStatuses.length > 0 && (
+              <div className="game-fair-play-check-list">
+                {remoteFairPlayStatuses.map((status) => (
+                <div
+                  className="game-fair-play-check-row"
+                  key={status.participantIdentity}
+                >
+                  <span>{status.participantName ?? status.participantIdentity}</span>
+                  <b>{status.passed ? 'READY ✓' : 'CHECKING...'}</b>
+                </div>
+                ))}
+              </div>
+            )}
+            <div className="game-ready-actions">
+              <button
+                type="button"
+                className={[
+                  'game-ready-button',
+                  isLocalReady ? 'is-ready' : '',
+                ].filter(Boolean).join(' ')}
+                onClick={onToggleReady}
+                disabled={!canToggleReady}
+              >
+                {isLocalReady ? 'READY ✓' : '준비하기'}
+              </button>
+              {autoReadyRemainingSeconds !== null && !isLocalReady && (
+                <span className="game-auto-ready-hint">
+                  자동 준비까지 {autoReadyRemainingSeconds}초
+                </span>
+              )}
+              {isHost && (
+                <button
+                  type="button"
+                  className="game-start-button"
+                  onClick={onStartGame}
+                  disabled={!canStartGame}
+                >
+                  GAME START
+                </button>
+              )}
+              {autoStartRemainingSeconds !== null && (
+                <span className="game-auto-ready-hint">
+                  자동 시작까지 {autoStartRemainingSeconds}초
+                </span>
+              )}
+            </div>
+          </div>
+        ) : isCountdown ? (
           <div className="game-countdown-panel" aria-live="polite">
             <span key={countdownLabel}>{countdownLabel}</span>
           </div>
@@ -410,19 +595,152 @@ export function GameBoard({
             ) : (
               <span>웃음을 참으세요! 공격을 버티는 중</span>
             )}
+            {isAudioFairPlayActive && localGameRole === 'defender' && (
+              <div className="game-fair-play-audio-status" role="status">
+                마이크 웃음 감지 중
+              </div>
+            )}
+            {fairPlayWarning?.active && (
+              <div className="game-fair-play-warning" role="status">
+                <strong>{fairPlayWarning.message}</strong>
+                <span>{Math.ceil((fairPlayWarning.remainingMs ?? 0) / 1000)}</span>
+              </div>
+            )}
+            {fairPlayDamageLocked ? (
+              <div className="game-fair-play-hit" role="status">
+                이번 공격 피해 완료
+              </div>
+            ) : fairPlayLastEvent ? (
+              <div className="game-fair-play-hit" role="status">
+                웃음 감지! LIFE -1
+              </div>
+            ) : null}
+            {fairPlayDebug && (
+              <pre className="game-fair-play-debug">
+                {JSON.stringify({
+                  smile: fairPlayDebug.smileScore.toFixed(2),
+                  cheek: fairPlayDebug.cheekScore.toFixed(2),
+                  state: fairPlayDebug.laughState,
+                  face: fairPlayDebug.faceVisible,
+                  mouthOccluded: fairPlayDebug.mouthOccluded,
+                  warningMs: Math.round(fairPlayDebug.warningRemainingMs),
+                }, null, 2)}
+              </pre>
+            )}
+            {audioFairPlayDebug && (
+              <pre className="game-fair-play-debug">
+                {JSON.stringify({
+                  audio: audioFairPlayDebug.audioLaughScore.toFixed(2),
+                  top: audioFairPlayDebug.topCategoryName ?? 'none',
+                  topScore:
+                    audioFairPlayDebug.topCategoryScore?.toFixed(2) ?? '0.00',
+                  state: audioFairPlayDebug.episodeState,
+                  unavailable:
+                    audioFairPlayDebug.unavailableReason
+                    ?? audioFairPlayUnavailableReason
+                    ?? '',
+                }, null, 2)}
+              </pre>
+            )}
             {renderApprovedAttackImage()}
           </div>
         ) : phase === 'attack-ended' ? (
           <div className="game-attack-ended-panel" aria-live="polite">
             <strong>공격 종료</strong>
-            <p>이번 공격이 끝났습니다.</p>
+            <p>
+              {attackEndReason === 'all-defenders-hit'
+                ? '모든 방어자가 웃어서 공격이 성공했습니다.'
+                : '공격 시간이 끝났습니다.'}
+            </p>
             {renderApprovedAttackImage()}
+          </div>
+        ) : phase === 'round-result' ? (
+          <div className="game-round-result-panel" aria-live="polite">
+            {roundResult?.laughedParticipantIdentities.length ? (
+              <>
+                <strong>웃음을 참지 못했어요!</strong>
+                <div className="game-round-result-list">
+                  {roundResult.lifeChanges.map((change) => {
+                    const participantName =
+                      participantNamesByIdentity[change.participantIdentity]
+                      ?? change.participantIdentity
+
+                    return (
+                      <div
+                        className="game-round-result-item"
+                        key={change.participantIdentity}
+                      >
+                        <span>{participantName}</span>
+                        <span>
+                          {renderLives(change.previousLives)}
+                          <b>→</b>
+                          {renderLives(change.currentLives)}
+                        </span>
+                        {change.eliminated && (
+                          <em>탈락</em>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            ) : (
+              <>
+                <strong>모두 버텼어요!</strong>
+                <p>이번 공격에서는 아무도 웃지 않았습니다.</p>
+              </>
+            )}
+            {isHost && (
+              <button
+                type="button"
+                className="game-start-button"
+                onClick={onStartNextRound}
+              >
+                다음 라운드
+              </button>
+            )}
           </div>
         ) : phase === 'round-ended' ? (
           <div className="game-attack-ended-panel" aria-live="polite">
-            <strong>다음 라운드 준비 중</strong>
+            <strong>NEXT ATTACK</strong>
             <p>
-              다음 공격자는 {attackerName ?? '공격자'}님입니다.
+              {attackerName ?? '공격자'}님의 공격 차례!
+            </p>
+            {isHost && (
+              <button
+                type="button"
+                className="game-start-button"
+                onClick={onStartNextRound}
+              >
+                다음 라운드
+              </button>
+            )}
+          </div>
+        ) : phase === 'game-over' ? (
+          <div className="game-round-result-panel game-over-panel" aria-live="polite">
+            <p>GAME OVER</p>
+            <strong>WINNER</strong>
+            <span>{winnerName ?? '승자'}님 승리</span>
+            {finalPlayerResults.length > 0 && (
+              <div className="game-round-result-list">
+                {finalPlayerResults.map((player) => (
+                  <div
+                    className="game-round-result-item"
+                    key={player.participantIdentity}
+                  >
+                    <span>{player.displayName}</span>
+                    <span>{renderLives(player.lives)}</span>
+                    {player.eliminated ? (
+                      <em>ELIMINATED</em>
+                    ) : (
+                      <em>WINNER</em>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <p>
+              총 {attackSequence ?? roundResult?.attackSequence ?? roundNumber ?? 0}회 공격
             </p>
           </div>
         ) : (
@@ -452,6 +770,11 @@ export function GameBoard({
                   GAME START
                 </button>
               )}
+              {autoStartRemainingSeconds !== null && (
+                <span className="game-auto-ready-hint">
+                  자동 시작까지 {autoStartRemainingSeconds}초
+                </span>
+              )}
             </div>
           </>
         )}
@@ -461,13 +784,16 @@ export function GameBoard({
           {screenShareSlot}
         </div>
       )}
-      <GameChatPanel
-        messages={chatMessages}
-        localParticipantId={localParticipantId}
-        onSendMessage={onSendChatMessage}
-        canSendMessage={canSendChatMessage}
-        sendMessage={chatSendMessage}
-      />
+      {shouldShowChatTimeline && (
+        <GameChatPanel
+          messages={chatMessages}
+          timelineEvents={timelineEvents}
+          localParticipantId={localParticipantId}
+          onSendMessage={onSendChatMessage}
+          canSendMessage={canSendChatMessage}
+          sendMessage={chatSendMessage}
+        />
+      )}
     </section>
   )
 }

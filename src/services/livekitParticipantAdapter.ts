@@ -17,6 +17,7 @@ type LiveKitParticipantMetadata = {
 type ParticipantMappingOptions = {
   defaultLanguage?: LanguageCode
   trackVersion?: number
+  localMediaStream?: MediaStream | null
 }
 
 const supportedLanguages = new Set<LanguageCode>([
@@ -110,11 +111,32 @@ const participantVideoStreamCache = new Map<
 
 function createParticipantMediaStream(
   participant: LiveKitParticipant,
+  fallbackStream?: MediaStream | null,
 ): MediaStream | null {
   const publication = participant.getTrackPublication(Track.Source.Camera)
   const mediaTrack = publication?.track?.mediaStreamTrack
 
   if (!mediaTrack || mediaTrack.readyState !== 'live') {
+    const fallbackVideoTrack = fallbackStream?.getVideoTracks().find(
+      (track) => track.readyState === 'live',
+    )
+
+    if (fallbackVideoTrack) {
+      const cached = participantVideoStreamCache.get(participant.identity)
+
+      if (cached?.trackId === fallbackVideoTrack.id) {
+        return cached.stream
+      }
+
+      const stream = new MediaStream([fallbackVideoTrack])
+      participantVideoStreamCache.set(participant.identity, {
+        trackId: fallbackVideoTrack.id,
+        stream,
+      })
+
+      return stream
+    }
+
     participantVideoStreamCache.delete(participant.identity)
     return null
   }
@@ -166,7 +188,10 @@ function mapLiveKitParticipant(
     joinedAt: participant.joinedAt?.toISOString() ?? new Date().toISOString(),
     avatarColor: getAvatarColor(participant.identity, role),
     avatarLabel: getParticipantInitials(name),
-    mediaStream: createParticipantMediaStream(participant),
+    mediaStream: createParticipantMediaStream(
+      participant,
+      role === 'local' ? options.localMediaStream : null,
+    ),
     liveKitIdentity: participant.identity,
     cameraTrackSid: getPublicationTrackSid(participant, Track.Source.Camera),
     cameraTrackId: getPublicationTrackId(participant, Track.Source.Camera),

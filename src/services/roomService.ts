@@ -1,4 +1,5 @@
 import { STORAGE_KEYS } from '../constants/storageKeys'
+import type { GameParticipantStatus, GameStateSnapshot } from '../types/game'
 import type { Room } from '../types'
 import { apiUrl } from './apiClient'
 
@@ -53,6 +54,11 @@ export function parseRoomCodeFromUrl(): string | null {
   return roomCode || null
 }
 
+export function normalizeRoomCode(roomCode: string): string | null {
+  const normalizedCode = roomCode.trim().toUpperCase()
+  return ROOM_CODE_PATTERN.test(normalizedCode) ? normalizedCode : null
+}
+
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -90,9 +96,9 @@ export function createRoom(): Room {
 }
 
 export function joinRoomByCode(roomCode: string): Room | null {
-  const normalizedCode = roomCode.trim().toUpperCase()
+  const normalizedCode = normalizeRoomCode(roomCode)
 
-  if (!ROOM_CODE_PATTERN.test(normalizedCode)) {
+  if (!normalizedCode) {
     return null
   }
 
@@ -117,9 +123,12 @@ type FreeBetaRoomResponse = {
     createdAt: string
     meetingRole: 'host' | 'participant'
     participantIdentity?: string
+    hostParticipantIdentity?: string
     hostControlToken?: string
     expiresAt?: string
     maxParticipants?: number
+    participants?: GameParticipantStatus[]
+    gameState?: GameStateSnapshot
   }
   error?: {
     code?: string
@@ -139,10 +148,31 @@ function getFreeBetaErrorMessage(
     ?? fallback
 }
 
+function logRoomCreateResponse(
+  status: number,
+  response: FreeBetaRoomResponse,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info('[room-create] response', {
+    status,
+    code: response.error?.code ?? null,
+    message:
+      response.error?.message
+      ?? response.message
+      ?? response.reason
+      ?? null,
+    roomCode: response.room?.roomCode ?? null,
+  })
+}
+
 export async function createServerRoom(input: {
   participantName: string
   language: string
   title?: string
+  participantCount?: number
 }): Promise<Room> {
   const response = await fetch(apiUrl('/api/free-beta/rooms'), {
     method: 'POST',
@@ -155,6 +185,8 @@ export async function createServerRoom(input: {
   const details = await response.json().catch(
     () => ({} as FreeBetaRoomResponse),
   ) as FreeBetaRoomResponse
+
+  logRoomCreateResponse(response.status, details)
 
   if (!response.ok || !details.room) {
     throw new Error(
@@ -172,9 +204,9 @@ export async function joinServerRoomByCode(input: {
   participantName: string
   language: string
 }): Promise<Room> {
-  const normalizedCode = input.roomCode.trim().toUpperCase()
+  const normalizedCode = normalizeRoomCode(input.roomCode)
 
-  if (!ROOM_CODE_PATTERN.test(normalizedCode)) {
+  if (!normalizedCode) {
     throw new Error('올바른 방 코드 형식이 아닙니다.')
   }
 

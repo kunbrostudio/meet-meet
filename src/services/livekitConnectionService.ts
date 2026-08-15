@@ -1,4 +1,5 @@
 import { apiUrl } from './apiClient'
+import type { GameStateSnapshot } from '../types/game'
 
 export type LiveKitMeetingRole = 'host' | 'participant'
 
@@ -13,6 +14,10 @@ export type LiveKitConnectionDetails = {
   token: string
   roomName: string
   participantIdentity: string
+  meetingRole?: LiveKitMeetingRole
+  hostParticipantIdentity?: string
+  hostControlToken?: string
+  gameState?: GameStateSnapshot
 }
 
 export type LiveKitRemoveParticipantRequest = {
@@ -29,6 +34,15 @@ export type LiveKitRemoveParticipantResponse = {
   message?: string
   roomName: string
   removedParticipantIdentity: string
+  hostChanged?: {
+    previousHostParticipantIdentity: string
+    newHostParticipantIdentity: string
+    newHostName: string
+    newHostControlToken: string
+    reason: 'host_eliminated' | 'host_left'
+    changedAt: string
+  }
+  gameState?: GameStateSnapshot
 }
 
 export type LiveKitEndRoomRequest = {
@@ -36,6 +50,11 @@ export type LiveKitEndRoomRequest = {
   requesterParticipantIdentity: string
   requesterMeetingRole: LiveKitMeetingRole
   hostControlToken?: string
+}
+
+export type FreeBetaLeaveRoomRequest = {
+  roomName: string
+  participantIdentity?: string
 }
 
 export type LiveKitMediaController = {
@@ -179,6 +198,31 @@ export async function endFreeBetaRoom(
       ?? details.reason
       ?? details.error
       ?? `Free beta room end request failed with status ${response.status}.`,
+    )
+  }
+}
+
+export async function leaveFreeBetaRoom(
+  request: FreeBetaLeaveRoomRequest,
+): Promise<void> {
+  const response = await fetch(apiUrl('/api/free-beta/rooms/leave'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  if (!response.ok) {
+    const details = await response.json().catch(
+      () => ({} as LiveKitErrorResponse),
+    ) as LiveKitErrorResponse
+    throw new Error(
+      details.message
+      ?? details.reason
+      ?? details.error
+      ?? `Free beta room leave request failed with status ${response.status}.`,
     )
   }
 }

@@ -1,15 +1,19 @@
 import type { Participant } from '../../types/participant'
+import type { GamePlayerState } from '../../types/game'
 import { getParticipantGameIdentity } from '../../services/gameStateService'
 import { ParticipantGameCard } from './ParticipantGameCard'
 
 type ParticipantColumnProps = {
-  side: 'left' | 'right'
+  side: 'left' | 'right' | 'mobile'
   participants: Participant[]
   selectedParticipantId?: number
   readyParticipantIdentities?: string[]
   attackerIdentity?: string
   defenderIdentities?: string[]
   isAttackActive?: boolean
+  playerStates?: Record<string, GamePlayerState>
+  maxLives?: number
+  fairPlayWarningParticipantIdentity?: string
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -22,6 +26,9 @@ export function ParticipantColumn({
   attackerIdentity,
   defenderIdentities = [],
   isAttackActive = false,
+  playerStates,
+  maxLives = 3,
+  fairPlayWarningParticipantIdentity,
   onSelectParticipant,
   onReconnectMedia,
 }: ParticipantColumnProps) {
@@ -32,10 +39,18 @@ export function ParticipantColumn({
     <aside
       className={`participant-column is-${side}`}
       data-count={participants.length}
-      aria-label={side === 'left' ? '왼쪽 참가자 영역' : '오른쪽 참가자 영역'}
+      aria-label={
+        side === 'left'
+          ? '왼쪽 참가자 영역'
+          : side === 'right'
+            ? '오른쪽 참가자 영역'
+            : '모바일 참가자 레일'
+      }
     >
       {participants.length === 0 ? (
-        <div className="participant-waiting-slot">친구를 기다리는 중</div>
+        <div className="participant-waiting-slot">
+          <span>WAITING FOR PLAYER...</span>
+        </div>
       ) : participants.map((participant) => (
         (() => {
           const participantIdentity = getParticipantGameIdentity(participant)
@@ -53,6 +68,11 @@ export function ParticipantColumn({
               isReady={readyIdentitySet.has(participantIdentity)}
               gameRole={gameRole}
               isAttackActive={isAttackActive}
+              playerState={playerStates?.[participantIdentity]}
+              maxLives={maxLives}
+              isFairPlayWarning={
+                participantIdentity === fairPlayWarningParticipantIdentity
+              }
               onSelect={
                 onSelectParticipant
                   ? () => onSelectParticipant(participant.id)

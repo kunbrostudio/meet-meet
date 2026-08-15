@@ -1,16 +1,20 @@
 export type GamePhase =
   | 'waiting'
   | 'ready'
+  | 'auto-start-pending'
+  | 'fair-play-check'
   | 'countdown'
   | 'game-started'
   | 'role-reveal'
   | 'attack-ready'
   | 'attack-active'
   | 'attack-ended'
+  | 'round-result'
   | 'round-ended'
+  | 'game-over'
+  | 'post-game'
   | 'attack-prep'
   | 'attacking'
-  | 'judging'
   | 'turn-result'
   | 'game-result'
 
@@ -32,6 +36,10 @@ export type GameStateSnapshot = {
   participantCount: number
   connectedParticipantCount: number
   readyParticipantCount: number
+  initialLives?: 1 | 3 | 5
+  autoStartAt?: string
+  gameOverAt?: string
+  postGameAt?: string
   countdownStartedAt?: string
   countdownDurationMs?: number
   roundNumber?: number
@@ -45,11 +53,92 @@ export type GameStateSnapshot = {
   attackStartedAt?: string
   attackDurationMs?: number
   attackEndsAt?: string
+  attackEndReason?: 'all-defenders-hit' | 'timeout'
   attackSequence?: number
   attackContent?: GameAttackContent | null
+  playerStates?: Record<string, GamePlayerState>
+  roundResult?: GameRoundResult | null
+  fairPlay?: GameFairPlayState
+  penalizedParticipantIdentitiesForCurrentAttack?: string[]
   hostParticipantIdentity?: string
   participants: GameParticipantStatus[]
   updatedAt: string
+}
+
+export type GamePlayerState = {
+  lives: number
+  eliminated: boolean
+}
+
+export type GameRoundLifeChange = {
+  participantIdentity: string
+  previousLives: number
+  currentLives: number
+  eliminated: boolean
+}
+
+export type GameRoundResult = {
+  roundNumber: number
+  attackSequence?: number
+  attackerIdentity?: string
+  laughedParticipantIdentities: string[]
+  lifeChanges: GameRoundLifeChange[]
+}
+
+export type GameFairPlayCheckStep =
+  | 'camera'
+  | 'face'
+  | 'mouth'
+  | 'smile'
+  | 'passed'
+
+export type GameFairPlayCheckParticipantStatus = {
+  participantIdentity: string
+  participantName?: string
+  cameraReady: boolean
+  faceReady: boolean
+  mouthReady: boolean
+  smileReady: boolean
+  passed: boolean
+  failed: boolean
+  step: GameFairPlayCheckStep
+  message: string
+  checkVersion?: number
+  calibrationVersion?: number
+  updatedAt: string
+}
+
+export type GameFairPlayCheckState = {
+  startedAt: string
+  activePlayerIdentities: string[]
+  participants: Record<string, GameFairPlayCheckParticipantStatus>
+  passedAt?: string
+}
+
+export type GameFairPlayState = {
+  lastEvent?: GameFairPlayEventRecord
+  check?: GameFairPlayCheckState
+}
+
+export type GameFairPlayEventReason =
+  | 'visible-laugh'
+  | 'multimodal-laugh'
+  | 'audio-laugh'
+  | 'occluded-audio-laugh'
+  | 'hidden-audio-laugh'
+  | 'mouth-occlusion-timeout'
+  | 'face-not-visible-timeout'
+
+export type GameFairPlayEventRecord = {
+  eventId: string
+  participantIdentity: string
+  reason: GameFairPlayEventReason
+  roundNumber: number
+  attackSequence?: number
+  previousLives: number
+  currentLives: number
+  eliminated: boolean
+  detectedAt: string
 }
 
 export type GameAttackContent = {
@@ -62,6 +151,57 @@ export type GameAttackContent = {
   version: number
   createdAt: string
 }
+
+export type GameTimelineEvent =
+  | {
+      id: string
+      type: 'attack'
+      attackId: string
+      participantIdentity?: string
+      displayName: string
+      media: GameAttackContent
+      timestamp: string
+    }
+  | {
+      id: string
+      type: 'attack-result'
+      attackId: string
+      title: string
+      message: string
+      defenderResults?: Array<{
+        participantIdentity: string
+        displayName: string
+        hit: boolean
+        eliminated: boolean
+      }>
+      timestamp: string
+    }
+  | {
+      id: string
+      type: 'elimination'
+      participantIdentity: string
+      displayName: string
+      timestamp: string
+    }
+  | {
+      id: string
+      type: 'game-result'
+      title: string
+      message: string
+      winnerParticipantIdentity?: string
+      winnerName?: string
+      eliminatedParticipants?: Array<{
+        participantIdentity: string
+        displayName: string
+      }>
+      timestamp: string
+    }
+  | {
+      id: string
+      type: 'system'
+      message: string
+      timestamp: string
+    }
 
 export type GameStateRequest = {
   type: 'game-state-request'
@@ -97,4 +237,42 @@ export type GameAttackContentSubmitRequest = {
   roundNumber: number
   attackSequence?: number
   requestedAt: string
+}
+
+export type GameFairPlayEventRequest = {
+  type: 'fair-play-event-request'
+  meetingId: string
+  roomCode: string
+  eventId: string
+  reason: GameFairPlayEventReason
+  roundNumber: number
+  attackSequence?: number
+  detectorVersion: string
+  scoreSummary?: {
+    smileScore?: number
+    cheekScore?: number
+    audioLaughScore?: number
+    audioTopCategoryName?: string
+    audioTopCategoryScore?: number
+  }
+  detectedAt: string
+}
+
+export type GameFairPlayCheckStatus = {
+  type: 'fair-play-check-status'
+  meetingId: string
+  roomCode: string
+  participantIdentity: string
+  participantName?: string
+  cameraReady: boolean
+  faceReady: boolean
+  mouthReady: boolean
+  smileReady: boolean
+  passed: boolean
+  failed: boolean
+  step: GameFairPlayCheckStep
+  message: string
+  checkVersion?: number
+  calibrationVersion?: number
+  updatedAt: string
 }

@@ -5,8 +5,9 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import express from 'express'
-import { AccessToken, RoomServiceClient } from 'livekit-server-sdk'
+import { AccessToken, DataPacket_Kind, RoomServiceClient } from 'livekit-server-sdk'
 import OpenAI from 'openai'
+import type { GameStateSnapshot } from '../src/types/game'
 
 type LanguageCode = 'ko' | 'en' | 'ja' | 'zh' | 'fr'
 
@@ -41,10 +42,17 @@ type EndRoomRequestBody = {
   hostControlToken?: unknown
 }
 
+type LeaveRoomRequestBody = {
+  roomName?: unknown
+  roomCode?: unknown
+  participantIdentity?: unknown
+}
+
 type CreateRoomRequestBody = {
   title?: unknown
   participantName?: unknown
   language?: unknown
+  participantCount?: unknown
 }
 
 type JoinRoomRequestBody = {
@@ -72,18 +80,41 @@ type FreeBetaParticipant = {
   joinedAt: number
 }
 
+type FreeBetaRoomMatchState = {
+  phase: 'post-game' | 'game-over'
+  matchId: string
+  revision: number
+  gameOverAt?: number
+  postGameAt?: number
+  winnerParticipantIdentity?: string
+}
+
 type FreeBetaRoom = {
   roomCode: string
   roomName: string
   title: string
   hostSessionId: string
   hostParticipantIdentity: string
+  hostControlToken: string
   hostControlTokenHash: string
+  participantLimit: number
+  matchState: FreeBetaRoomMatchState
   participants: Map<string, FreeBetaParticipant>
   attackContentIds: Set<string>
   createdAt: number
   expiresAt: number
   closedAt?: number
+}
+
+type HostTransferReason = 'host_eliminated' | 'host_left'
+
+type HostTransferResult = {
+  previousHostParticipantIdentity: string
+  newHostParticipantIdentity: string
+  newHostName: string
+  newHostControlToken: string
+  reason: HostTransferReason
+  changedAt: string
 }
 
 type AnonymousSession = {
@@ -105,12 +136,13 @@ const app = express()
 const port = Number(process.env.TRANSLATION_SERVER_PORT ?? 8787)
 const translationModel =
   process.env.OPENAI_TRANSLATION_MODEL ?? 'gpt-5-mini'
+const defaultMaxActiveRooms =
+  process.env.NODE_ENV === 'production' ? 100 : 3
 const freeBetaConfig = {
-  maxActiveRooms: Number(process.env.FREE_BETA_MAX_ACTIVE_ROOMS ?? 3),
-  maxParticipants: Number(process.env.FREE_BETA_MAX_PARTICIPANTS ?? 4),
-  maxActiveRoomsPerSession: Number(
-    process.env.FREE_BETA_MAX_ACTIVE_ROOMS_PER_SESSION ?? 1,
+  maxActiveRooms: Number(
+    process.env.FREE_BETA_MAX_ACTIVE_ROOMS ?? defaultMaxActiveRooms,
   ),
+  maxParticipants: Number(process.env.FREE_BETA_MAX_PARTICIPANTS ?? 4),
   roomDurationMinutes: Number(
     process.env.FREE_BETA_ROOM_DURATION_MINUTES ?? 60,
   ),
@@ -158,7 +190,15 @@ const attackContentRecords = new Map<string, AttackContentRecord>()
 const createRateBuckets = new Map<string, number[]>()
 const joinRateBuckets = new Map<string, number[]>()
 const attackUploadRateBuckets = new Map<string, number[]>()
+const postGameTimers = new Map<string, {
+  matchId: string
+  timer: ReturnType<typeof setTimeout>
+}>()
 const cleanupIntervalMs = 60_000
+const liveKitDataEncoder = new TextEncoder()
+const liveKitMeetingControlTopic = 'meet-meet-room-control'
+const liveKitGameStateTopic = 'meet-meet-game-state'
+let totalAnonymousPlayerSessions = 0
 
 function getErrorDetails(error: unknown) {
   return {
@@ -179,6 +219,14 @@ function getErrorDetails(error: unknown) {
         ? error.code
         : undefined,
   }
+}
+
+function logRoomCreateServerEvent(details: Record<string, unknown>) {
+  if (process.env.NODE_ENV === 'production') {
+    return
+  }
+
+  console.info('[room-create-server]', details)
 }
 
 function getLiveKitApiHost(livekitUrl: string): string {
@@ -406,6 +454,339 @@ function createRoomServiceClient() {
   }
 }
 
+function createRoomMatchState(): FreeBetaRoomMatchState {
+  return {
+    phase: 'post-game',
+    matchId: crypto.randomUUID(),
+    revision: 0,
+  }
+}
+
+function getStableParticipantId(identity: string): number {
+  const digest = crypto.createHash('sha1').update(identity).digest()
+
+  return digest.readUInt32BE(0)
+}
+
+function getRoomParticipantsSnapshot(room: FreeBetaRoom) {
+  return [...room.participants.values()]
+    .sort((left, right) => left.joinedAt - right.joinedAt)
+    .map((participant) => ({
+      participantId: getStableParticipantId(participant.identity),
+      participantIdentity: participant.identity,
+      name: participant.name,
+      role: participant.meetingRole,
+      isConnected: true,
+      isReady: false,
+    }))
+}
+
+function createServerGameStateSnapshot(room: FreeBetaRoom): GameStateSnapshot {
+  const matchState = room.matchState
+  const participants = getRoomParticipantsSnapshot(room)
+  const now = new Date().toISOString()
+  const gameOverAt =
+    matchState.phase === 'game-over' && matchState.gameOverAt
+      ? new Date(matchState.gameOverAt).toISOString()
+      : undefined
+  const postGameAt =
+    matchState.phase === 'game-over' && matchState.postGameAt
+      ? new Date(matchState.postGameAt).toISOString()
+      : undefined
+
+  return {
+    type: 'game-state-snapshot',
+    meetingId: room.roomCode,
+    roomCode: room.roomCode,
+    phase: matchState.phase,
+    revision: matchState.revision,
+    participantCount: room.participantLimit,
+    connectedParticipantCount: room.participants.size,
+    readyParticipantCount: 0,
+    gameOverAt,
+    postGameAt,
+    activePlayerIdentities: matchState.winnerParticipantIdentity
+      ? [matchState.winnerParticipantIdentity]
+      : undefined,
+    attackerIdentity:
+      matchState.phase === 'game-over'
+        ? matchState.winnerParticipantIdentity
+        : undefined,
+    defenderIdentities: [],
+    attackContent: null,
+    playerStates: undefined,
+    roundResult: null,
+    penalizedParticipantIdentitiesForCurrentAttack: [],
+    hostParticipantIdentity: room.hostParticipantIdentity,
+    participants,
+    updatedAt: now,
+  }
+}
+
+function createRoomSnapshotResponse(
+  room: FreeBetaRoom,
+  participant: FreeBetaParticipant,
+  hostControlToken?: string,
+) {
+  return {
+    meetingId: room.roomCode,
+    roomCode: room.roomCode,
+    roomName: room.roomName,
+    title: room.title,
+    createdAt: new Date(room.createdAt).toISOString(),
+    expiresAt: new Date(room.expiresAt).toISOString(),
+    meetingRole: participant.meetingRole,
+    participantIdentity: participant.identity,
+    hostParticipantIdentity: room.hostParticipantIdentity,
+    hostControlToken:
+      participant.meetingRole === 'host'
+        ? hostControlToken ?? room.hostControlToken
+        : undefined,
+    maxParticipants: room.participantLimit,
+    participants: getRoomParticipantsSnapshot(room),
+    gameState: createServerGameStateSnapshot(room),
+  }
+}
+
+async function publishLiveKitDataMessage(
+  room: FreeBetaRoom,
+  topic: string,
+  message: unknown,
+  destinationIdentities?: string[],
+) {
+  const liveKitClient = createRoomServiceClient()
+
+  if (!liveKitClient) {
+    console.warn('[livekit-server] Data publish skipped; LiveKit is not configured', {
+      roomName: room.roomName,
+      topic,
+    })
+    return
+  }
+
+  await liveKitClient.roomService.sendData(
+    room.roomName,
+    liveKitDataEncoder.encode(JSON.stringify(message)),
+    DataPacket_Kind.RELIABLE,
+    {
+      topic,
+      destinationIdentities,
+    },
+  )
+}
+
+function publishServerGameStateSnapshot(room: FreeBetaRoom) {
+  void publishLiveKitDataMessage(room, liveKitGameStateTopic, {
+    type: 'game-state-snapshot',
+    payload: createServerGameStateSnapshot(room),
+  }).catch((error) => {
+    console.warn('[room-lifecycle] Failed to publish server game snapshot', {
+      roomCode: room.roomCode,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  })
+}
+
+function logRoomState(room: FreeBetaRoom, source: string) {
+  if (process.env.NODE_ENV === 'production') {
+    return
+  }
+
+  console.info('[room-state]', {
+    source,
+    roomCode: room.roomCode,
+    host: room.hostParticipantIdentity,
+    phase: room.matchState.phase,
+    participants: [...room.participants.values()]
+      .sort((left, right) => left.joinedAt - right.joinedAt)
+      .map((participant) => ({
+        identity: participant.identity,
+        name: participant.name,
+        role: participant.meetingRole,
+        joinedAt: participant.joinedAt,
+      })),
+  })
+  console.info('[room-authority]', {
+    source,
+    roomCode: room.roomCode,
+    hostParticipantIdentity: room.hostParticipantIdentity,
+    participants: [...room.participants.values()]
+      .sort((left, right) => left.joinedAt - right.joinedAt)
+      .map((participant) => ({
+        identity: participant.identity,
+        name: participant.name,
+        joinOrder: participant.joinedAt,
+        meetingRole: participant.meetingRole,
+      })),
+  })
+}
+
+function publishServerHostChanged(
+  room: FreeBetaRoom,
+  hostChanged: HostTransferResult,
+) {
+  const publicPayload = {
+    ...hostChanged,
+    newHostControlToken: undefined,
+  }
+
+  void Promise.all([
+    publishLiveKitDataMessage(room, liveKitMeetingControlTopic, {
+      type: 'host-changed',
+      payload: {
+        meetingId: room.roomCode,
+        roomName: room.roomName,
+        ...publicPayload,
+      },
+    }),
+    publishLiveKitDataMessage(
+      room,
+      liveKitMeetingControlTopic,
+      {
+        type: 'host-changed',
+        payload: {
+          meetingId: room.roomCode,
+          roomName: room.roomName,
+          ...hostChanged,
+        },
+      },
+      [hostChanged.newHostParticipantIdentity],
+    ),
+  ]).then(() => {
+    console.info('[room-host] host-changed published', {
+      roomCode: room.roomCode,
+      previousHost: hostChanged.previousHostParticipantIdentity,
+      successor: hostChanged.newHostParticipantIdentity,
+    })
+  }).catch((error) => {
+    console.warn('[room-host] host-changed publish failed', {
+      roomCode: room.roomCode,
+      message: error instanceof Error ? error.message : String(error),
+    })
+  })
+}
+
+function clearPostGameTimer(roomCode: string) {
+  const timerRecord = postGameTimers.get(roomCode)
+
+  if (!timerRecord) {
+    return
+  }
+
+  clearTimeout(timerRecord.timer)
+  postGameTimers.delete(roomCode)
+}
+
+function transitionRoomToPostGame(
+  room: FreeBetaRoom,
+  matchId: string,
+  source: 'timer' | 'reconcile',
+) {
+  if (
+    room.closedAt
+    || room.matchState.phase !== 'game-over'
+    || room.matchState.matchId !== matchId
+  ) {
+    return
+  }
+
+  clearPostGameTimer(room.roomCode)
+  room.matchState = {
+    phase: 'post-game',
+    matchId: crypto.randomUUID(),
+    revision: room.matchState.revision + 1,
+  }
+
+  console.info('[room-lifecycle] server transitioned to POST_GAME', {
+    roomCode: room.roomCode,
+    source,
+    hostParticipantIdentity: room.hostParticipantIdentity,
+    participantCount: room.participants.size,
+  })
+  publishServerGameStateSnapshot(room)
+}
+
+function schedulePostGameTransition(room: FreeBetaRoom) {
+  if (
+    room.matchState.phase !== 'game-over'
+    || typeof room.matchState.postGameAt !== 'number'
+  ) {
+    return
+  }
+
+  const existing = postGameTimers.get(room.roomCode)
+
+  if (existing?.matchId === room.matchState.matchId) {
+    return
+  }
+
+  if (existing) {
+    clearTimeout(existing.timer)
+  }
+
+  const matchId = room.matchState.matchId
+  const delayMs = Math.max(0, room.matchState.postGameAt - Date.now())
+  const timer = setTimeout(() => {
+    const currentRoom = freeBetaRooms.get(room.roomCode)
+
+    if (!currentRoom || !isActiveFreeBetaRoom(currentRoom)) {
+      postGameTimers.delete(room.roomCode)
+      return
+    }
+
+    transitionRoomToPostGame(currentRoom, matchId, 'timer')
+  }, delayMs)
+
+  postGameTimers.set(room.roomCode, { matchId, timer })
+}
+
+function reconcileRoomLifecycle(room: FreeBetaRoom) {
+  if (
+    room.matchState.phase === 'game-over'
+    && typeof room.matchState.postGameAt === 'number'
+    && Date.now() >= room.matchState.postGameAt
+  ) {
+    transitionRoomToPostGame(room, room.matchState.matchId, 'reconcile')
+    return
+  }
+
+  schedulePostGameTransition(room)
+}
+
+function startServerGameOver(
+  room: FreeBetaRoom,
+  winnerParticipantIdentity: string | undefined,
+  source: string,
+) {
+  if (!winnerParticipantIdentity) {
+    return
+  }
+
+  if (
+    room.matchState.phase === 'game-over'
+    && room.matchState.winnerParticipantIdentity === winnerParticipantIdentity
+  ) {
+    return
+  }
+
+  clearPostGameTimer(room.roomCode)
+  room.matchState = {
+    phase: 'post-game',
+    matchId: crypto.randomUUID(),
+    revision: room.matchState.revision + 1,
+    winnerParticipantIdentity,
+  }
+
+  console.info('[room-lifecycle] server normalized match end to POST_GAME', {
+    roomCode: room.roomCode,
+    winnerParticipantIdentity,
+    source,
+  })
+
+  logRoomState(room, 'match-end-post-game')
+  publishServerGameStateSnapshot(room)
+}
+
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) {
     return {}
@@ -446,6 +827,7 @@ function getSession(request: express.Request, response: express.Response) {
       activeRoomCodes: new Set(),
     }
     anonymousSessions.set(sessionId, session)
+    totalAnonymousPlayerSessions += 1
 
     const cookieOptions = [
       `${sessionCookieName}=${encodeURIComponent(sessionId)}`,
@@ -506,6 +888,24 @@ function normalizeParticipantName(name: unknown): string {
     : 'Guest'
 }
 
+function normalizeParticipantLimit(participantCount: unknown): number {
+  const parsedCount =
+    typeof participantCount === 'number'
+      ? participantCount
+      : typeof participantCount === 'string'
+        ? Number.parseInt(participantCount, 10)
+        : Number.NaN
+
+  if (!Number.isFinite(parsedCount)) {
+    return 2
+  }
+
+  return Math.min(
+    freeBetaConfig.maxParticipants,
+    Math.max(2, Math.floor(parsedCount)),
+  )
+}
+
 function getActiveRooms() {
   const now = Date.now()
   return [...freeBetaRooms.values()].filter(
@@ -513,11 +913,151 @@ function getActiveRooms() {
   )
 }
 
+function isActiveFreeBetaRoom(room: FreeBetaRoom | undefined, now = Date.now()) {
+  return Boolean(room && !room.closedAt && room.expiresAt > now)
+}
+
+function removeSessionRoomAssociation(
+  roomCode: string,
+  sessionId?: string,
+) {
+  if (sessionId) {
+    anonymousSessions.get(sessionId)?.activeRoomCodes.delete(roomCode)
+    return
+  }
+
+  for (const session of anonymousSessions.values()) {
+    session.activeRoomCodes.delete(roomCode)
+  }
+}
+
+function removeRoomParticipant(
+  room: FreeBetaRoom,
+  participantIdentity: string,
+) {
+  const participant = room.participants.get(participantIdentity)
+
+  room.participants.delete(participantIdentity)
+
+  if (participant) {
+    removeSessionRoomAssociation(room.roomCode, participant.sessionId)
+  }
+
+  return participant
+}
+
+function getHostSuccessor(
+  room: FreeBetaRoom,
+  removedParticipantIdentity: string,
+) {
+  return [...room.participants.values()]
+    .filter((participant) => participant.identity !== removedParticipantIdentity)
+    .sort((left, right) => left.joinedAt - right.joinedAt)[0]
+}
+
+function transferRoomHost(
+  room: FreeBetaRoom,
+  removedParticipantIdentity: string,
+  reason: HostTransferReason,
+): HostTransferResult | undefined {
+  console.info('[room-host] transfer requested', {
+    roomCode: room.roomCode,
+    removedParticipantIdentity,
+    reason,
+  })
+
+  const removedParticipant = room.participants.get(removedParticipantIdentity)
+
+  if (
+    removedParticipant?.meetingRole !== 'host'
+    || room.participants.size <= 1
+  ) {
+    return undefined
+  }
+
+  const successor = getHostSuccessor(room, removedParticipantIdentity)
+
+  if (!successor) {
+    return undefined
+  }
+
+  const newHostControlToken = generateHostControlToken()
+  const previousHostParticipantIdentity = room.hostParticipantIdentity
+
+  console.info(`[room-host] previousHost=${previousHostParticipantIdentity}`, {
+    roomCode: room.roomCode,
+    previousHost: previousHostParticipantIdentity,
+  })
+  console.info(`[room-host] successor=${successor.identity}`, {
+    roomCode: room.roomCode,
+    successor: successor.identity,
+  })
+
+  removedParticipant.meetingRole = 'participant'
+  successor.meetingRole = 'host'
+  room.hostSessionId = successor.sessionId
+  room.hostParticipantIdentity = successor.identity
+  room.hostControlToken = newHostControlToken
+  room.hostControlTokenHash = hashHostControlToken(newHostControlToken)
+
+  console.info(`[room-host] room host persisted=${room.hostParticipantIdentity}`, {
+    roomCode: room.roomCode,
+    roomHostParticipantIdentity: room.hostParticipantIdentity,
+  })
+  console.info('[free-beta] Room host transferred', {
+    roomCode: room.roomCode,
+    previousHostParticipantIdentity,
+    newHostParticipantIdentity: successor.identity,
+    reason,
+  })
+
+  return {
+    previousHostParticipantIdentity,
+    newHostParticipantIdentity: successor.identity,
+    newHostName: successor.name,
+    newHostControlToken,
+    reason,
+    changedAt: new Date().toISOString(),
+  }
+}
+
+function reconcileSessionActiveRoomCodes(session: AnonymousSession) {
+  const now = Date.now()
+
+  for (const roomCode of [...session.activeRoomCodes]) {
+    const room = freeBetaRooms.get(roomCode)
+    const sessionParticipant = room
+      ? [...room.participants.values()].find(
+          (participant) => participant.sessionId === session.id,
+        )
+      : undefined
+
+    if (!isActiveFreeBetaRoom(room, now) || !sessionParticipant) {
+      session.activeRoomCodes.delete(roomCode)
+      console.info('[free-beta] Removed stale session room reference', {
+        sessionId: session.id,
+        roomCode,
+        reason: !room
+          ? 'room_missing'
+          : !isActiveFreeBetaRoom(room, now)
+            ? 'room_inactive'
+            : 'session_not_in_room',
+      })
+    }
+  }
+
+  return [...session.activeRoomCodes].filter((roomCode) => {
+    const room = freeBetaRooms.get(roomCode)
+    return isActiveFreeBetaRoom(room, now)
+  })
+}
+
 function cleanupExpiredRooms() {
   const now = Date.now()
 
   for (const [roomCode, room] of freeBetaRooms.entries()) {
     if (room.closedAt || room.expiresAt <= now) {
+      clearPostGameTimer(roomCode)
       void deleteRoomAttackContent(room)
       freeBetaRooms.delete(roomCode)
 
@@ -590,7 +1130,7 @@ function isRateLimited(
 }
 
 function hasRoomCapacity(room: FreeBetaRoom): boolean {
-  return room.participants.size < freeBetaConfig.maxParticipants
+  return room.participants.size < room.participantLimit
 }
 
 function validateHostControlToken(
@@ -732,15 +1272,6 @@ app.post(
     try {
       await ensureAttackContentDirectory()
 
-      const previousContentIds = [...attackContentRecords.values()]
-        .filter((record) => (
-          record.roomCode === room.roomCode
-          && record.uploaderParticipantIdentity === sessionParticipant.identity
-        ))
-        .map((record) => record.contentId)
-
-      await Promise.all(previousContentIds.map(deleteAttackContent))
-
       const contentId = crypto.randomUUID()
       const filePath = path.join(
         attackContentDirectory,
@@ -802,6 +1333,16 @@ app.get('/api/health', (_request, response) => {
       meetingCreationEnabled: freeBetaConfig.meetingCreationEnabled,
       roomDurationMinutes: freeBetaConfig.roomDurationMinutes,
     },
+  })
+})
+
+app.get('/api/stats', (request, response) => {
+  getSession(request, response)
+
+  response.json({
+    totalPlayers: totalAnonymousPlayerSessions,
+    persistence: 'memory',
+    resetsOnRestart: true,
   })
 })
 
@@ -925,10 +1466,21 @@ app.post('/api/free-beta/rooms', async (request, response) => {
 
   const session = getSession(request, response)
   const clientIp = getClientIp(request)
-  const { title, participantName, language } =
+  const { title, participantName, language, participantCount } =
     request.body as CreateRoomRequestBody
 
+  logRoomCreateServerEvent({
+    requestReceived: true,
+    sessionId: session.id,
+    clientIp,
+    activeRooms: getActiveRooms().length,
+  })
+
   if (!freeBetaConfig.meetingCreationEnabled) {
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: 'MEETING_CREATION_DISABLED',
+    })
     sendJsonError(
       response,
       503,
@@ -946,6 +1498,10 @@ app.post('/api/free-beta/rooms', async (request, response) => {
       freeBetaConfig.createRateWindowSeconds,
     )
   ) {
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: 'CREATE_RATE_LIMITED',
+    })
     sendJsonError(
       response,
       429,
@@ -958,6 +1514,12 @@ app.post('/api/free-beta/rooms', async (request, response) => {
   const activeRooms = getActiveRooms()
 
   if (activeRooms.length >= freeBetaConfig.maxActiveRooms) {
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: 'MAX_ACTIVE_ROOMS_REACHED',
+      activeRooms: activeRooms.length,
+      maxActiveRooms: freeBetaConfig.maxActiveRooms,
+    })
     sendJsonError(
       response,
       429,
@@ -967,27 +1529,16 @@ app.post('/api/free-beta/rooms', async (request, response) => {
     return
   }
 
-  const sessionActiveRooms = [...session.activeRoomCodes].filter(
-    (roomCode) => freeBetaRooms.has(roomCode),
-  )
-
-  if (
-    sessionActiveRooms.length
-    >= freeBetaConfig.maxActiveRoomsPerSession
-  ) {
-    sendJsonError(
-      response,
-      429,
-      'SESSION_ACTIVE_ROOM_LIMIT_REACHED',
-      '무료 베타에서는 한 브라우저 세션당 활성 방을 1개만 만들 수 있습니다.',
-    )
-    return
-  }
+  reconcileSessionActiveRoomCodes(session)
 
   const liveKitClient = createRoomServiceClient()
 
   if (!liveKitClient) {
     console.error('[free-beta] LiveKit environment is not configured.')
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: 'LIVEKIT_NOT_CONFIGURED',
+    })
     sendJsonError(
       response,
       503,
@@ -1008,11 +1559,12 @@ app.post('/api/free-beta/rooms', async (request, response) => {
     const normalizedParticipantName =
       normalizeParticipantName(participantName)
     const normalizedLanguage = normalizeLanguage(language)
+    const participantLimit = normalizeParticipantLimit(participantCount)
 
     await liveKitClient.roomService.createRoom({
       name: roomName,
       emptyTimeout: freeBetaConfig.roomDurationMinutes * 60,
-      maxParticipants: freeBetaConfig.maxParticipants,
+      maxParticipants: participantLimit,
     })
 
     const participant: FreeBetaParticipant = {
@@ -1032,7 +1584,10 @@ app.post('/api/free-beta/rooms', async (request, response) => {
           : 'MEET MEET Room',
       hostSessionId: session.id,
       hostParticipantIdentity: hostIdentity,
+      hostControlToken,
       hostControlTokenHash: hashHostControlToken(hostControlToken),
+      participantLimit,
+      matchState: createRoomMatchState(),
       participants: new Map([[hostIdentity, participant]]),
       attackContentIds: new Set(),
       createdAt: now,
@@ -1042,30 +1597,29 @@ app.post('/api/free-beta/rooms', async (request, response) => {
     freeBetaRooms.set(roomCode, room)
     session.activeRoomCodes.add(roomCode)
 
-    console.info('[free-beta] Room created', {
+  console.info('[free-beta] Room created', {
       roomCode,
       hostParticipantIdentity: hostIdentity,
       expiresAt: new Date(expiresAt).toISOString(),
     })
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: null,
+      createdRoomCode: roomCode,
+    })
+    logRoomState(room, 'create-room')
 
     response.json({
       ok: true,
-      room: {
-        meetingId: roomCode,
-        roomCode,
-        roomName,
-        title: room.title,
-        createdAt: new Date(now).toISOString(),
-        expiresAt: new Date(expiresAt).toISOString(),
-        meetingRole: 'host',
-        participantIdentity: hostIdentity,
-        hostControlToken,
-        maxParticipants: freeBetaConfig.maxParticipants,
-      },
+      room: createRoomSnapshotResponse(room, participant, hostControlToken),
     })
   } catch (error) {
     const details = getErrorDetails(error)
     console.error('[free-beta] Failed to create room', details)
+    logRoomCreateServerEvent({
+      requestReceived: true,
+      rejectedReason: 'ROOM_CREATE_FAILED',
+    })
     sendJsonError(
       response,
       500,
@@ -1114,25 +1668,18 @@ app.post('/api/free-beta/rooms/join', (request, response) => {
     return
   }
 
+  reconcileRoomLifecycle(room)
+
   const existingParticipant = [...room.participants.values()].find(
     (participant) => participant.sessionId === session.id,
   )
 
   if (existingParticipant) {
     session.activeRoomCodes.add(room.roomCode)
+    logRoomState(room, 'join-existing')
     response.json({
       ok: true,
-      room: {
-        meetingId: room.roomCode,
-        roomCode: room.roomCode,
-        roomName: room.roomName,
-        title: room.title,
-        createdAt: new Date(room.createdAt).toISOString(),
-        expiresAt: new Date(room.expiresAt).toISOString(),
-        meetingRole: existingParticipant.meetingRole,
-        participantIdentity: existingParticipant.identity,
-        maxParticipants: freeBetaConfig.maxParticipants,
-      },
+      room: createRoomSnapshotResponse(room, existingParticipant),
     })
     return
   }
@@ -1147,22 +1694,7 @@ app.post('/api/free-beta/rooms/join', (request, response) => {
     return
   }
 
-  const sessionActiveRooms = [...session.activeRoomCodes].filter(
-    (activeRoomCode) => freeBetaRooms.has(activeRoomCode),
-  )
-
-  if (
-    sessionActiveRooms.length
-    >= freeBetaConfig.maxActiveRoomsPerSession
-  ) {
-    sendJsonError(
-      response,
-      429,
-      'SESSION_ACTIVE_ROOM_LIMIT_REACHED',
-      '무료 베타에서는 한 브라우저 세션당 활성 방을 1개만 사용할 수 있습니다.',
-    )
-    return
-  }
+  reconcileSessionActiveRoomCodes(session)
 
   const participantIdentity = generateParticipantIdentity(room.roomCode)
   const participant: FreeBetaParticipant = {
@@ -1182,20 +1714,106 @@ app.post('/api/free-beta/rooms/join', (request, response) => {
     participantIdentity,
     participantCount: room.participants.size,
   })
+  console.info('[rejoin] participant joined', {
+    roomCode: room.roomCode,
+    participantIdentity,
+    joinedAt: participant.joinedAt,
+    meetingRole: participant.meetingRole,
+  })
+  logRoomState(room, 'join-new')
 
   response.json({
     ok: true,
-    room: {
-      meetingId: room.roomCode,
-      roomCode: room.roomCode,
-      roomName: room.roomName,
-      title: room.title,
-      createdAt: new Date(room.createdAt).toISOString(),
-      expiresAt: new Date(room.expiresAt).toISOString(),
-      meetingRole: 'participant',
-      participantIdentity,
-      maxParticipants: freeBetaConfig.maxParticipants,
-    },
+    room: createRoomSnapshotResponse(room, participant),
+  })
+})
+
+app.post('/api/free-beta/rooms/leave', (request, response) => {
+  cleanupExpiredRooms()
+
+  const session = getSession(request, response)
+  const {
+    roomName,
+    roomCode,
+    participantIdentity,
+  } = request.body as LeaveRoomRequestBody
+  const normalizedRoomCode =
+    typeof roomName === 'string' && roomName.trim()
+      ? roomName.trim().toUpperCase()
+      : typeof roomCode === 'string'
+        ? roomCode.trim().toUpperCase()
+        : ''
+
+  if (!normalizedRoomCode) {
+    sendJsonError(
+      response,
+      400,
+      'ROOM_NAME_REQUIRED',
+      'roomName or roomCode is required.',
+    )
+    return
+  }
+
+  const room = freeBetaRooms.get(normalizedRoomCode)
+
+  if (!isActiveFreeBetaRoom(room)) {
+    session.activeRoomCodes.delete(normalizedRoomCode)
+    response.json({
+      ok: true,
+      stale: true,
+      roomName: normalizedRoomCode,
+      roomCode: normalizedRoomCode,
+    })
+    return
+  }
+
+  const participant = [...room!.participants.values()].find((candidate) => (
+    candidate.sessionId === session.id
+    && (
+      typeof participantIdentity !== 'string'
+      || !participantIdentity.trim()
+      || candidate.identity === participantIdentity.trim()
+    )
+  ))
+
+  if (!participant) {
+    session.activeRoomCodes.delete(normalizedRoomCode)
+    response.json({
+      ok: true,
+      stale: true,
+      roomName: normalizedRoomCode,
+      roomCode: normalizedRoomCode,
+    })
+    return
+  }
+
+  const hostChanged = transferRoomHost(room!, participant.identity, 'host_left')
+
+  removeRoomParticipant(room!, participant.identity)
+
+  if (room!.participants.size === 0) {
+    clearPostGameTimer(room!.roomCode)
+    room!.closedAt = Date.now()
+    void deleteRoomAttackContent(room!)
+    removeSessionRoomAssociation(room!.roomCode)
+  } else if (hostChanged) {
+    publishServerHostChanged(room!, hostChanged)
+    publishServerGameStateSnapshot(room!)
+  }
+
+  console.info('[free-beta] Participant left room', {
+    roomCode: room!.roomCode,
+    participantIdentity: participant.identity,
+    remainingParticipantCount: room!.participants.size,
+    roomClosed: Boolean(room!.closedAt),
+  })
+
+  response.json({
+    ok: true,
+    roomName: room!.roomName,
+    roomCode: room!.roomCode,
+    hostChanged,
+    closed: Boolean(room!.closedAt),
   })
 })
 
@@ -1257,6 +1875,8 @@ app.post('/api/livekit/token', async (request, response) => {
     return
   }
 
+  reconcileRoomLifecycle(room)
+
   const liveKitEnvironment = getLiveKitEnvironment()
 
   if (!liveKitEnvironment) {
@@ -1313,6 +1933,7 @@ app.post('/api/livekit/token', async (request, response) => {
       participantIdentity: normalizedIdentity,
       meetingRole,
     })
+    logRoomState(room, 'token-issued')
     response.json({
       ok: true,
       url: liveKitEnvironment.livekitUrl,
@@ -1320,6 +1941,12 @@ app.post('/api/livekit/token', async (request, response) => {
       roomName: room.roomName,
       participantIdentity: normalizedIdentity,
       meetingRole,
+      hostParticipantIdentity: room.hostParticipantIdentity,
+      hostControlToken:
+        meetingRole === 'host'
+          ? room.hostControlToken
+          : undefined,
+      gameState: createServerGameStateSnapshot(room),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -1411,6 +2038,11 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
 
   try {
     const normalizedTargetIdentity = targetParticipantIdentity.trim()
+    const hostChanged = transferRoomHost(
+      room,
+      normalizedTargetIdentity,
+      'host_eliminated',
+    )
 
     console.info('[livekit-server] Calling RoomServiceClient.removeParticipant', {
       roomName: normalizedRoomName,
@@ -1423,12 +2055,81 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
       requesterMeetingRole,
     })
 
+    if (hostChanged) {
+      publishServerHostChanged(room, hostChanged)
+      removeRoomParticipant(room, normalizedTargetIdentity)
+      console.info('[room-host] previous host removed', {
+        roomCode: room.roomCode,
+        previousHost: normalizedTargetIdentity,
+        remainingParticipantCount: room.participants.size,
+      })
+
+      if (room.participants.size === 1) {
+        startServerGameOver(
+          room,
+          hostChanged.newHostParticipantIdentity,
+          'host_eliminated',
+        )
+      } else {
+        publishServerGameStateSnapshot(room)
+      }
+
+      response.json({
+        ok: true,
+        roomName: normalizedRoomName,
+        removedParticipantIdentity: normalizedTargetIdentity,
+        hostChanged,
+        gameState: createServerGameStateSnapshot(room),
+      })
+
+      setTimeout(() => {
+        void liveKitClient.roomService.removeParticipant(
+          normalizedRoomName,
+          normalizedTargetIdentity,
+        ).catch((error) => {
+          const details = getErrorDetails(error)
+
+          if (isParticipantAlreadyRemovedError(details)) {
+            console.info('[livekit-server] Participant already removed after host transfer', {
+              roomName: normalizedRoomName,
+              removedParticipantIdentity: normalizedTargetIdentity,
+            })
+            return
+          }
+
+          console.error('[livekit-server] Failed delayed host removal', {
+            ...details,
+            roomName: normalizedRoomName,
+            targetParticipantIdentity: normalizedTargetIdentity,
+          })
+        })
+      }, 500)
+
+      console.info('[livekit-server] Host transfer response sent before removal', {
+        roomName: normalizedRoomName,
+        removedParticipantIdentity: normalizedTargetIdentity,
+        newHostParticipantIdentity: hostChanged.newHostParticipantIdentity,
+      })
+      return
+    }
+
     await liveKitClient.roomService.removeParticipant(
       normalizedRoomName,
       normalizedTargetIdentity,
     )
 
-    room.participants.delete(normalizedTargetIdentity)
+    removeRoomParticipant(room, normalizedTargetIdentity)
+
+    if (room.participants.size === 1) {
+      const winnerParticipant = [...room.participants.values()][0]
+      startServerGameOver(
+        room,
+        winnerParticipant?.identity,
+        'participant_eliminated',
+      )
+    } else {
+      publishServerGameStateSnapshot(room)
+    }
 
     console.info('[livekit-server] Participant removed', {
       roomName: normalizedRoomName,
@@ -1443,6 +2144,8 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
       ok: true,
       roomName: normalizedRoomName,
       removedParticipantIdentity: normalizedTargetIdentity,
+      hostChanged,
+      gameState: createServerGameStateSnapshot(room),
     })
   } catch (error) {
     const details = getErrorDetails(error)
@@ -1460,7 +2163,7 @@ app.post('/api/livekit/remove-participant', async (request, response) => {
         removedParticipantIdentity: normalizedTargetIdentity,
       })
       if (normalizedTargetIdentity) {
-        room.participants.delete(normalizedTargetIdentity)
+        removeRoomParticipant(room, normalizedTargetIdentity)
       }
       response.json({
         ok: true,
@@ -1542,6 +2245,7 @@ app.post('/api/free-beta/rooms/end', (request, response) => {
   }
 
   room.closedAt = Date.now()
+  clearPostGameTimer(room.roomCode)
   void deleteRoomAttackContent(room)
 
   for (const session of anonymousSessions.values()) {

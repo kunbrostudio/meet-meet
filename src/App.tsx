@@ -1,23 +1,21 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { AppHeader } from './components/common/AppHeader'
 import { ENABLE_MOCK_DATA } from './constants/mockData'
 import { LandingPage } from './pages/LandingPage'
 import { MeetingRoomPage } from './pages/MeetingRoomPage'
-import { SetupPage } from './pages/SetupPage'
 import type {
   LocalMediaState,
   MediaDeviceSelection,
   MeetingPreferences,
   Room,
 } from './types'
-import { stopMediaStream } from './services/deviceService'
 import {
   createRoom,
   createServerRoom,
-  joinRoomByCode,
+  clearCurrentRoom,
   joinServerRoomByCode,
   loadCurrentRoom,
+  normalizeRoomCode,
 } from './services/roomService'
 import {
   clearActiveMeetingId,
@@ -32,11 +30,10 @@ import {
 } from './services/participantService'
 import { cleanupExpiredAndOversizedRecords } from './services/localFirstStoragePolicyService'
 
-export type Page = 'landing' | 'setup' | 'meeting'
+export type Page = 'landing' | 'meeting'
 
 const pagePaths: Record<Page, string> = {
   landing: '/',
-  setup: '/setup',
   meeting: '/meeting',
 }
 
@@ -45,12 +42,18 @@ const defaultPreferences: MeetingPreferences = {
   sourceLanguage: 'ko',
   targetLanguage: 'ko',
   participantCount: 2,
+  initialLives: 3,
   autoStartCaption: false,
 }
 
 function getPageFromPath(): Page {
+  if (window.location.pathname === '/setup') {
+    window.history.replaceState({}, '', '/')
+    return 'landing'
+  }
+
   const entry = Object.entries(pagePaths).find(([, path]) => path === window.location.pathname)
-  return (entry?.[0] as Page | undefined) ?? 'landing'
+  return entry?.[0] === 'meeting' ? 'meeting' : 'landing'
 }
 
 function getInitialMeetingState() {
@@ -71,9 +74,12 @@ function getInitialMeetingState() {
           ?? storedRoom?.meetingRole
           ?? 'host',
         participantIdentity: storedRoom?.participantIdentity,
+        hostParticipantIdentity: storedRoom?.hostParticipantIdentity,
         hostControlToken: storedRoom?.hostControlToken,
         expiresAt: storedRoom?.expiresAt,
         maxParticipants: storedRoom?.maxParticipants,
+        participants: storedRoom?.participants,
+        gameState: storedRoom?.gameState,
       }
     : createRoom()
 
@@ -118,120 +124,89 @@ function App() {
     speakerDeviceId: '',
   })
 
-  const clearLocalMedia = () => {
-    setLocalMedia((current) => {
-      stopMediaStream(current.stream)
-      return {
-        stream: null,
-        cameraEnabled: true,
-        microphoneEnabled: true,
-      }
-    })
-  }
-
   useEffect(() => {
     const handlePopState = () => {
       const nextPage = getPageFromPath()
-      if (nextPage !== 'setup' && nextPage !== 'meeting') {
-        clearLocalMedia()
+      if (import.meta.env.DEV && nextPage !== 'meeting' && localMedia.stream) {
+        console.info('[camera-session] route-change preserved')
       }
       setPage(nextPage)
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [])
+  }, [localMedia.stream])
 
   const navigate = (nextPage: Page) => {
-    if (nextPage !== 'setup' && nextPage !== 'meeting') {
-      clearLocalMedia()
+    if (import.meta.env.DEV && nextPage !== 'meeting' && localMedia.stream) {
+      console.info('[camera-session] route-change preserved')
     }
     window.history.pushState({}, '', pagePaths[nextPage])
     setPage(nextPage)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const beginNewRoom = async () => {
-    try {
-      const room = await createServerRoom({
-        participantName: preferences.displayName,
-        language: preferences.sourceLanguage,
-        title: 'MEET MEET Room',
-      })
-      setCurrentRoom(room)
-      setMeetingCreatedAt(room.createdAt)
-      setRoomName(room.title)
-      saveActiveMeetingId(room.meetingId)
-      navigate('setup')
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : '방을 생성하지 못했습니다.'
-      window.alert(message)
-    }
-  }
-
-  const joinWithCode = async (code: string): Promise<string | null> => {
-    let room: Room
-
-    try {
-      room = await joinServerRoomByCode({
-        roomCode: code,
-        participantName: preferences.displayName,
-        language: preferences.sourceLanguage,
-      })
-    } catch (error) {
-      const fallbackRoom = joinRoomByCode(code)
-
-      if (!fallbackRoom) {
-        return error instanceof Error
-          ? error.message
-          : '올바른 방 코드 형식이 아닙니다.'
-      }
-
-      return error instanceof Error
-        ? error.message
-        : '방에 입장하지 못했습니다.'
-    }
-
-    if (!room) {
-      return '올바른 방 코드 형식이 아닙니다.'
-    }
-
-    setCurrentRoom(room)
-    setMeetingCreatedAt(room.createdAt)
-    setRoomName(room.title)
-    saveActiveMeetingId(room.meetingId)
-    saveMeetingMeta({
+  const enterMeetingRoom = (room: Room, nextPreferences: MeetingPreferences) => {
+    const now = new Date().toISOString()
+    const meetingMeta = {
       meetingId: room.meetingId,
       roomCode: room.roomCode,
       roomName: room.title,
       meetingRole: room.meetingRole,
-      participantCount: preferences.participantCount,
-      createdAt: room.createdAt,
-      updatedAt: new Date().toISOString(),
-      preferences,
-    })
-    navigate('setup')
-    return null
-  }
-
-  const startMeeting = (nextPreferences: MeetingPreferences) => {
-    const now = new Date().toISOString()
-    const meetingMeta = {
-      meetingId,
-      roomCode,
-      roomName: currentRoom.title,
-      meetingRole: currentRoom.meetingRole,
       participantCount: nextPreferences.participantCount,
-      createdAt: meetingCreatedAt,
+      createdAt: room.createdAt,
       updatedAt: now,
       preferences: nextPreferences,
     }
     setPreferences(nextPreferences)
-    setRoomName(currentRoom.title)
-    saveActiveMeetingId(meetingId)
+    setRoomName(room.title)
+    saveActiveMeetingId(room.meetingId)
     saveMeetingMeta(meetingMeta)
     navigate('meeting')
+  }
+
+  const createRoomFromLanding = async (
+    nextPreferences: MeetingPreferences,
+    nextRoomName: string,
+  ): Promise<string | null> => {
+    try {
+      const room = await createServerRoom({
+        participantName: nextPreferences.displayName,
+        language: nextPreferences.sourceLanguage,
+        title: nextRoomName,
+        participantCount: nextPreferences.participantCount,
+      })
+      setCurrentRoom(room)
+      setMeetingCreatedAt(room.createdAt)
+      enterMeetingRoom(room, nextPreferences)
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : '방을 생성하지 못했습니다.'
+    }
+  }
+
+  const joinWithCode = async (
+    code: string,
+    nextPreferences: MeetingPreferences,
+  ): Promise<string | null> => {
+    const normalizedCode = normalizeRoomCode(code)
+
+    if (!normalizedCode) {
+      return '올바른 방 코드 형식이 아닙니다.'
+    }
+
+    try {
+      const room = await joinServerRoomByCode({
+        roomCode: normalizedCode,
+        participantName: nextPreferences.displayName,
+        language: nextPreferences.sourceLanguage,
+      })
+      setCurrentRoom(room)
+      setMeetingCreatedAt(room.createdAt)
+      enterMeetingRoom(room, nextPreferences)
+      return null
+    } catch (error) {
+      return error instanceof Error ? error.message : '방에 입장하지 못했습니다.'
+    }
   }
 
   const participants = [
@@ -259,7 +234,12 @@ function App() {
   const updateLocalMedia = (nextMedia: LocalMediaState) => {
     setLocalMedia((current) => {
       if (current.stream && current.stream !== nextMedia.stream) {
-        stopMediaStream(current.stream)
+        const nextTracks = new Set(nextMedia.stream?.getTracks() ?? [])
+        current.stream.getTracks().forEach((track) => {
+          if (!nextTracks.has(track)) {
+            track.stop()
+          }
+        })
       }
       return nextMedia
     })
@@ -291,35 +271,22 @@ function App() {
       preferences,
     })
     clearActiveMeetingId()
+    clearCurrentRoom()
     navigate('landing')
   }
 
   return (
     <div className="app-shell">
-      {page === 'setup' && (
-        <AppHeader
-          onLogoClick={() => navigate('landing')}
-        />
-      )}
-
       <main>
         {page === 'landing' && (
           <LandingPage
-            onStart={beginNewRoom}
-            onJoin={joinWithCode}
-          />
-        )}
-        {page === 'setup' && (
-          <SetupPage
-            roomCode={roomCode}
-            initialPreferences={preferences}
             localMedia={localMedia}
             deviceSelection={deviceSelection}
-            canSetParticipantCount={currentRoom.meetingRole === 'host'}
+            initialPreferences={preferences}
             onLocalMediaChange={updateLocalMedia}
             onDeviceSelectionChange={setDeviceSelection}
-            onBack={() => navigate('landing')}
-            onJoin={startMeeting}
+            onCreateRoom={createRoomFromLanding}
+            onJoinRoom={joinWithCode}
           />
         )}
         {page === 'meeting' && (
@@ -330,14 +297,17 @@ function App() {
             roomName={roomName}
             participants={participants}
             participantCount={preferences.participantCount}
+            initialLives={preferences.initialLives ?? 3}
             targetLanguage={preferences.targetLanguage}
             autoStartCaption={preferences.autoStartCaption}
             deviceSelection={deviceSelection}
+            initialHostParticipantIdentity={currentRoom.hostParticipantIdentity}
+            initialGameState={currentRoom.gameState}
             hostControlToken={currentRoom.hostControlToken}
             onLocalMediaChange={updateLocalMedia}
             onDeviceSelectionChange={setDeviceSelection}
             onPreferencesChange={updateMeetingPreferences}
-            onReconnectMedia={() => navigate('setup')}
+            onReconnectMedia={() => navigate('landing')}
             onReturnHome={() => navigate('landing')}
             onLeave={endMeeting}
           />

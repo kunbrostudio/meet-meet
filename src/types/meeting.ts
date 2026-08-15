@@ -3,6 +3,7 @@ import type { ChatMessage } from './chat'
 import type { Participant } from './participant'
 import type { Transcript } from './transcript'
 import type { TranslationRecord } from './translation'
+import type { GameParticipantStatus, GameStateSnapshot } from './game'
 
 export type SummaryStat = {
   id: string
@@ -37,6 +38,7 @@ export type MeetingPreferences = {
   sourceLanguage: LanguageCode
   targetLanguage: LanguageCode
   participantCount: number
+  initialLives?: 1 | 3 | 5
   autoStartCaption: boolean
 }
 
@@ -101,7 +103,10 @@ export type Room = {
   createdAt: string
   meetingRole: 'host' | 'participant'
   participantIdentity?: string
+  hostParticipantIdentity?: string
   hostControlToken?: string
   expiresAt?: string
   maxParticipants?: number
+  participants?: GameParticipantStatus[]
+  gameState?: GameStateSnapshot
 }

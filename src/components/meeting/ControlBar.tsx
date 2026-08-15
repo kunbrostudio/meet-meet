@@ -6,19 +6,16 @@ type ControlBarProps = {
   participant: Participant | undefined
   isCaptionActive?: boolean
   isScreenSharing: boolean
-  isConversationOpen: boolean
   isParticipantsOpen: boolean
   isSettingsOpen: boolean
   isHost: boolean
   recordingEnabled?: boolean
-  chatUnreadCount: number
   viewMode: 'grid' | 'focus'
   showCaptionHint?: boolean
   captionMessage?: string
   liveCaptionText?: string
   screenShareMessage: string
   captionButtonRef?: RefObject<HTMLButtonElement | null>
-  chatButtonRef?: RefObject<HTMLButtonElement | null>
   participantsButtonRef?: RefObject<HTMLButtonElement | null>
   settingsButtonRef?: RefObject<HTMLButtonElement | null>
   showTranslationLockButton?: boolean
@@ -28,31 +25,24 @@ type ControlBarProps = {
   onLockedTranslationClick?: () => void
   onToggleScreenShare: () => void
   onToggleViewMode: () => void
+  onOpenGameMode: () => void
   onToggleParticipants: () => void
-  onOpenChat: () => void
   onToggleSettings: () => void
   onRequestEnd: () => void
 }
 
 export function ControlBar({
   participant,
-  isScreenSharing,
-  isConversationOpen,
   isParticipantsOpen,
   isSettingsOpen,
   isHost,
-  chatUnreadCount,
-  viewMode,
   screenShareMessage,
-  chatButtonRef,
   participantsButtonRef,
   settingsButtonRef,
   onToggleMicrophone,
   onToggleCamera,
-  onToggleScreenShare,
-  onToggleViewMode,
+  onOpenGameMode,
   onToggleParticipants,
-  onOpenChat,
   onToggleSettings,
   onRequestEnd,
 }: ControlBarProps) {
@@ -77,37 +67,17 @@ export function ControlBar({
           onClick={onToggleCamera}
         />
         <ControlButton
-          className={isScreenSharing ? 'is-active' : ''}
-          icon="screen"
-          label={isScreenSharing ? '화면 공유 중지' : '화면 공유 시작'}
-          onClick={onToggleScreenShare}
-        />
-        <ControlButton
-          className={viewMode === 'focus' ? 'is-active' : ''}
-          icon="grid"
-          label={viewMode === 'grid' ? '발표자 보기' : '그리드 보기'}
-          onClick={onToggleViewMode}
+          className={isParticipantsOpen ? '' : 'is-active'}
+          icon="gamepad"
+          label="GAME MODE"
+          onClick={onOpenGameMode}
         />
         <ControlButton
           buttonRef={participantsButtonRef}
           className={isParticipantsOpen ? 'is-active' : ''}
           icon="users"
-          label="참가자 목록"
+          label="PLAYERS"
           onClick={onToggleParticipants}
-        />
-        <ControlButton
-          buttonRef={chatButtonRef}
-          className={isConversationOpen ? 'is-active' : ''}
-          icon="message"
-          label={
-            isConversationOpen
-              ? '채팅 닫기'
-              : chatUnreadCount > 0
-                ? `채팅 열기, 새 메시지 ${chatUnreadCount}개`
-                : '채팅 열기'
-          }
-          badgeCount={chatUnreadCount}
-          onClick={onOpenChat}
         />
         <ControlButton
           buttonRef={settingsButtonRef}
@@ -132,6 +102,7 @@ type ControlButtonProps = {
   className?: string
   icon:
     | 'captions'
+    | 'gamepad'
     | 'globe'
     | 'grid'
     | 'message'

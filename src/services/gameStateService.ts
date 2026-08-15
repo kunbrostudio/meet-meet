@@ -2,12 +2,17 @@ import type {
   GameAttackContent,
   GameAttackContentSubmitRequest,
   GameAttackStartRequest,
+  GameFairPlayState,
   GamePhase,
+  GamePlayerState,
   GameReadyChange,
+  GameRoundResult,
   GameStateRequest,
   GameStateSnapshot,
 } from '../types/game'
 import type { Participant } from '../types/participant'
+
+export const DEFAULT_PLAYER_LIVES = 3
 
 type CreateGameStateSnapshotInput = {
   meetingId: string
@@ -17,6 +22,10 @@ type CreateGameStateSnapshotInput = {
   previousRevision?: number
   hostParticipantIdentity?: string
   readyParticipantIdentities?: Iterable<string>
+  initialLives?: 1 | 3 | 5
+  autoStartAt?: string
+  gameOverAt?: string
+  postGameAt?: string
   phase?: GamePhase
   countdownStartedAt?: string
   countdownDurationMs?: number
@@ -31,8 +40,13 @@ type CreateGameStateSnapshotInput = {
   attackStartedAt?: string
   attackDurationMs?: number
   attackEndsAt?: string
+  attackEndReason?: GameStateSnapshot['attackEndReason']
   attackSequence?: number
   attackContent?: GameAttackContent | null
+  playerStates?: Record<string, GamePlayerState>
+  roundResult?: GameRoundResult | null
+  fairPlay?: GameFairPlayState
+  penalizedParticipantIdentitiesForCurrentAttack?: string[]
 }
 
 export function getLobbyGamePhase(
@@ -73,6 +87,10 @@ export function createGameStateSnapshot({
   previousRevision = 0,
   hostParticipantIdentity,
   readyParticipantIdentities = [],
+  initialLives,
+  autoStartAt,
+  gameOverAt,
+  postGameAt,
   phase,
   countdownStartedAt,
   countdownDurationMs,
@@ -87,8 +105,13 @@ export function createGameStateSnapshot({
   attackStartedAt,
   attackDurationMs,
   attackEndsAt,
+  attackEndReason,
   attackSequence,
   attackContent,
+  playerStates,
+  roundResult,
+  fairPlay,
+  penalizedParticipantIdentitiesForCurrentAttack,
 }: CreateGameStateSnapshotInput): GameStateSnapshot {
   const visibleParticipants = participants.slice(0, participantCount)
   const connectedParticipantCount = visibleParticipants.length
@@ -114,6 +137,10 @@ export function createGameStateSnapshot({
     participantCount,
     connectedParticipantCount,
     readyParticipantCount,
+    initialLives,
+    autoStartAt,
+    gameOverAt,
+    postGameAt,
     countdownStartedAt,
     countdownDurationMs,
     roundNumber,
@@ -127,8 +154,13 @@ export function createGameStateSnapshot({
     attackStartedAt,
     attackDurationMs,
     attackEndsAt,
+    attackEndReason,
     attackSequence,
     attackContent: attackContent ?? null,
+    playerStates,
+    roundResult: roundResult ?? null,
+    fairPlay,
+    penalizedParticipantIdentitiesForCurrentAttack,
     hostParticipantIdentity:
       hostParticipantIdentity
       ?? hostParticipant?.liveKitIdentity
@@ -195,6 +227,9 @@ export function getDefenderIdentities(
 export function getGameStateSnapshotKey(snapshot: GameStateSnapshot): string {
   return JSON.stringify({
     phase: snapshot.phase,
+    autoStartAt: snapshot.autoStartAt,
+    gameOverAt: snapshot.gameOverAt,
+    postGameAt: snapshot.postGameAt,
     countdownStartedAt: snapshot.countdownStartedAt,
     countdownDurationMs: snapshot.countdownDurationMs,
     roundNumber: snapshot.roundNumber,
@@ -208,8 +243,15 @@ export function getGameStateSnapshotKey(snapshot: GameStateSnapshot): string {
     attackStartedAt: snapshot.attackStartedAt,
     attackDurationMs: snapshot.attackDurationMs,
     attackEndsAt: snapshot.attackEndsAt,
+    attackEndReason: snapshot.attackEndReason,
     attackSequence: snapshot.attackSequence,
     attackContent: snapshot.attackContent,
+    playerStates: snapshot.playerStates,
+    roundResult: snapshot.roundResult,
+    fairPlay: snapshot.fairPlay,
+    penalizedParticipantIdentitiesForCurrentAttack:
+      snapshot.penalizedParticipantIdentitiesForCurrentAttack,
+    initialLives: snapshot.initialLives,
     participantCount: snapshot.participantCount,
     connectedParticipantCount: snapshot.connectedParticipantCount,
     readyParticipantCount: snapshot.readyParticipantCount,

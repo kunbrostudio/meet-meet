@@ -186,7 +186,10 @@ export function LiveKitTestRoom({
               onMessage={handleDataMessage}
             />
             <LiveKitLocalMediaPublisher stream={localMediaStream} />
-            <LiveKitParticipantObserver onChange={handleParticipantsChange} />
+            <LiveKitParticipantObserver
+              localMediaStream={localMediaStream}
+              onChange={handleParticipantsChange}
+            />
             <LiveKitScreenShareObserver onChange={handleScreenShareChange} />
             {isOverlayOpen && <VideoConference />}
             <RoomAudioRenderer />
@@ -345,6 +348,7 @@ function LiveKitDataBridge({
         topic === LIVEKIT_MEETING_CONTROL_TOPIC
           ? message?.type === 'meeting-ended'
             || message?.type === 'participant-kicked'
+            || message?.type === 'host-changed'
           : topic === LIVEKIT_TRANSCRIPT_TOPIC
           ? message?.type === 'transcript-created'
           : topic === LIVEKIT_TRANSLATION_TOPIC
@@ -355,6 +359,8 @@ function LiveKitDataBridge({
             || message?.type === 'game-ready-change'
             || message?.type === 'attack-start-request'
             || message?.type === 'attack-content-submit-request'
+            || message?.type === 'fair-play-event-request'
+            || message?.type === 'fair-play-check-status'
           : message?.type === 'chat-message'
             || message?.type === 'system-message'
       )
@@ -603,8 +609,10 @@ function LiveKitLocalMediaPublisher({
 }
 
 function LiveKitParticipantObserver({
+  localMediaStream,
   onChange,
 }: {
+  localMediaStream: MediaStream | null
   onChange: (participants: Participant[]) => void
 }) {
   const room = useRoomContext()
@@ -665,9 +673,9 @@ function LiveKitParticipantObserver({
       liveKitParticipants.filter(
         (participant): participant is RemoteParticipant => !participant.isLocal,
       ),
-      { trackVersion: trackRevision },
+      { localMediaStream, trackVersion: trackRevision },
     ),
-    [liveKitParticipants, room.localParticipant, trackRevision],
+    [liveKitParticipants, localMediaStream, room.localParticipant, trackRevision],
   )
 
   useEffect(() => {

@@ -4,16 +4,20 @@ import type { GamePhase } from '../../types/game'
 const phaseLabels: Record<GamePhase, string> = {
   waiting: '대기 중',
   ready: '준비 완료',
+  'auto-start-pending': '방 정원 충족',
+  'fair-play-check': '페어플레이 체크',
   countdown: '카운트다운',
   'game-started': '게임 시작',
   'role-reveal': '역할 공개',
   'attack-ready': '공격 준비',
   'attack-active': '공격 중',
   'attack-ended': '공격 종료',
+  'round-result': '라운드 결과',
   'round-ended': '라운드 종료',
+  'game-over': '게임 종료',
+  'post-game': '대기 중',
   'attack-prep': '공격 준비',
   attacking: '공격 중',
-  judging: '판정 중',
   'turn-result': '턴 결과',
   'game-result': '게임 결과',
 }
@@ -35,7 +39,7 @@ export function GameBoardHeader({
         </span>
         <div>
           <strong>GAME BOARD</strong>
-          <p>웃참 공격전 준비 공간</p>
+          <p>DON'T LAUGH</p>
         </div>
       </div>
       <div className="game-board-status">

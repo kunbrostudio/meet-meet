@@ -7,23 +7,34 @@ import {
   useRef,
   useState,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon } from '../components/common/Icon'
 import { Logo } from '../components/common/Logo'
 import { ENABLE_MOCK_DATA } from '../constants/mockData'
 import { TRANSLATION_MODE_CONFIG } from '../constants/translationMode'
+import {
+  AUDIO_LAUGH_TRIGGER_THRESHOLD,
+  AUDIO_LAUGH_VERY_HIGH_THRESHOLD,
+} from '../constants/fairPlayAudio'
 import { GameBoard } from '../components/game-room/GameBoard'
 import { MeetMeetRoomLayout } from '../components/game-room/MeetMeetRoomLayout'
+import { PlayerGallery } from '../components/game-room/PlayerGallery'
 import { ScreenShareCard } from '../components/meeting/ScreenShareCard'
 import { ControlBar } from '../components/meeting/ControlBar'
 import { EndMeetingModal } from '../components/meeting/EndMeetingModal'
 import { MeetingSettingsPanel } from '../components/meeting/MeetingSettingsPanel'
-import { ParticipantsPanel } from '../components/meeting/ParticipantsPanel'
 import { RemoveParticipantModal } from '../components/meeting/RemoveParticipantModal'
 import type { Participant } from '../types/participant'
 import type {
   GameAttackContent,
+  GameFairPlayCheckParticipantStatus,
+  GameFairPlayCheckState,
+  GameFairPlayCheckStatus,
+  GameFairPlayEventRequest,
   GamePhase,
+  GamePlayerState,
   GameStateSnapshot,
+  GameTimelineEvent,
 } from '../types/game'
 import type {
   LanguageCode,
@@ -63,7 +74,6 @@ import {
   getAudioOutputDevices,
   getVideoInputDevices,
   requestMediaStream,
-  stopMediaStream,
   toggleTrack,
 } from '../services/deviceService'
 import {
@@ -85,6 +95,7 @@ import {
   createGameStateRequest,
   createGameStateSnapshot,
   createTurnOrder,
+  DEFAULT_PLAYER_LIVES,
   filterReadyParticipantIdentities,
   getActivePlayerIdentities,
   getDefenderIdentities,
@@ -97,6 +108,17 @@ import {
   getAttackContentErrorMessage,
   uploadAttackContent,
 } from '../services/attackContentService'
+import {
+  FairPlayDetector,
+  type FairPlayCheckUiState,
+  type FairPlayDebugState,
+  type FairPlayWarningState,
+} from '../services/fairPlayDetectorService'
+import {
+  AudioLaughDetector,
+  type AudioLaughDebugState,
+  type AudioLaughEvent,
+} from '../services/audioLaughDetectorService'
 import {
   createManualTranslation,
   dedupeTranslations,
@@ -118,6 +140,7 @@ import {
 } from '../services/captionPreferencesService'
 import {
   endFreeBetaRoom,
+  leaveFreeBetaRoom,
   removeLiveKitParticipant,
   requestLiveKitToken,
   type LiveKitConnectionDetails,
@@ -143,6 +166,417 @@ const GAME_COUNTDOWN_DURATION_MS = 3000
 const GAME_ROLE_REVEAL_DURATION_MS = 2600
 const GAME_ATTACK_DURATION_MS = 30_000
 const GAME_ATTACK_END_REVIEW_DURATION_MS = 2400
+const GAME_TURN_HANDOFF_DURATION_MS = 1700
+const GAME_AUTO_READY_DELAY_MS = 15_000
+const GAME_AUTO_START_DELAY_MS = 10_000
+const FAIR_PLAY_DEBUG_ENABLED = import.meta.env.VITE_FAIR_PLAY_DEBUG === 'true'
+
+function logFairPlayCheckDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.debug(`[fair-play] ${message}`, details ?? {})
+}
+
+function logGameDamageDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.debug(`[game-damage] ${message}`, details ?? {})
+}
+
+function logMatchStartDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[match-start] ${message}`, details ?? {})
+}
+
+function logAutoStartDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[auto-start] ${message}`, details ?? {})
+}
+
+function logHostTransferDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[host-transfer] ${message}`, details ?? {})
+}
+
+function logPostGameDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[post-game] ${message}`, details ?? {})
+}
+
+function logGameResultDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[game-result] ${message}`, details ?? {})
+}
+
+function logNextMatchDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[next-match] ${message}`, details ?? {})
+}
+
+function logLocalParticipantDebug(details: Record<string, unknown>) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info('[local-participant]', details)
+}
+
+function logRoomAuthorityDebug(details: Record<string, unknown>) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info('[room-authority]', details)
+}
+
+function shouldAcceptServerRoomSnapshot(
+  current: GameStateSnapshot,
+  incoming: GameStateSnapshot,
+): boolean {
+  return (
+    incoming.meetingId === current.meetingId
+    && incoming.roomCode === current.roomCode
+    && (
+      incoming.revision >= current.revision
+      || incoming.phase === 'game-over'
+      || incoming.phase === 'post-game'
+    )
+  )
+}
+
+function getSnapshotParticipantIdentities(snapshot: GameStateSnapshot): string[] {
+  return snapshot.participants
+    .map((participant) => participant.participantIdentity)
+    .filter((participantIdentity): participantIdentity is string => (
+      typeof participantIdentity === 'string'
+    ))
+}
+
+function scopePostGameSnapshotToRoster(
+  snapshot: GameStateSnapshot,
+  previousSnapshot: GameStateSnapshot,
+): GameStateSnapshot {
+  if (snapshot.phase !== 'post-game') {
+    return snapshot
+  }
+
+  const rosterIdentities = getSnapshotParticipantIdentities(snapshot)
+
+  if (rosterIdentities.length === 0) {
+    return snapshot
+  }
+
+  const participantNamesByIdentity = Object.fromEntries(
+    snapshot.participants
+      .filter((participant) => participant.participantIdentity)
+      .map((participant) => [
+        participant.participantIdentity as string,
+        participant.name,
+      ]),
+  )
+
+  return {
+    ...snapshot,
+    activePlayerIdentities: snapshot.activePlayerIdentities
+      ?.filter((participantIdentity) => (
+        rosterIdentities.includes(participantIdentity)
+      )),
+    fairPlay: {
+      ...snapshot.fairPlay,
+      check: createFairPlayCheckState({
+        activePlayerIdentities: rosterIdentities,
+        participantNamesByIdentity,
+        previous:
+          snapshot.fairPlay?.check
+          ?? previousSnapshot.fairPlay?.check,
+      }),
+    },
+  }
+}
+
+function logRejoinDebug(
+  message: string,
+  details?: Record<string, unknown>,
+) {
+  if (!import.meta.env.DEV) {
+    return
+  }
+
+  console.info(`[rejoin] ${message}`, details ?? {})
+}
+
+function createInitialPlayerStates(
+  playerIdentities: string[],
+  initialLives: 1 | 3 | 5 = DEFAULT_PLAYER_LIVES,
+): Record<string, GamePlayerState> {
+  return Object.fromEntries(
+    playerIdentities.map((participantIdentity) => [
+      participantIdentity,
+      {
+        lives: initialLives,
+        eliminated: false,
+      },
+    ]),
+  )
+}
+
+function getAlivePlayerIdentities(input: {
+  activePlayerIdentities?: string[]
+  playerStates?: Record<string, GamePlayerState>
+}): string[] {
+  return (input.activePlayerIdentities ?? []).filter((participantIdentity) => (
+    !input.playerStates?.[participantIdentity]?.eliminated
+  ))
+}
+
+function getNextAttackerIdentity(input: {
+  turnOrder?: string[]
+  activePlayerIdentities: string[]
+  currentAttackerIdentity?: string
+  playerStates?: Record<string, GamePlayerState>
+}): {
+  turnOrder: string[]
+  currentTurnIndex: number
+  attackerIdentity?: string
+} {
+  let turnOrder = (input.turnOrder ?? input.activePlayerIdentities)
+    .filter((participantIdentity) => (
+      input.activePlayerIdentities.includes(participantIdentity)
+    ))
+
+  input.activePlayerIdentities.forEach((participantIdentity) => {
+    if (!turnOrder.includes(participantIdentity)) {
+      turnOrder = [...turnOrder, participantIdentity]
+    }
+  })
+
+  if (turnOrder.length === 0) {
+    return {
+      turnOrder,
+      currentTurnIndex: 0,
+      attackerIdentity: undefined,
+    }
+  }
+
+  const startIndex = Math.max(
+    0,
+    turnOrder.findIndex((participantIdentity) => (
+      participantIdentity === input.currentAttackerIdentity
+    )),
+  )
+
+  for (let offset = 1; offset <= turnOrder.length; offset += 1) {
+    const candidateIndex = (startIndex + offset) % turnOrder.length
+    const candidateIdentity = turnOrder[candidateIndex]
+
+    if (!input.playerStates?.[candidateIdentity]?.eliminated) {
+      return {
+        turnOrder,
+        currentTurnIndex: candidateIndex,
+        attackerIdentity: candidateIdentity,
+      }
+    }
+  }
+
+  return {
+    turnOrder,
+    currentTurnIndex: startIndex,
+    attackerIdentity: undefined,
+  }
+}
+
+function createWaitingFairPlayCheckStatus(input: {
+  participantIdentity: string
+  participantName?: string
+  message?: string
+}): GameFairPlayCheckParticipantStatus {
+  return {
+    participantIdentity: input.participantIdentity,
+    participantName: input.participantName,
+    cameraReady: false,
+    faceReady: false,
+    mouthReady: false,
+    smileReady: false,
+    passed: false,
+    failed: false,
+    step: 'camera',
+    message: input.message ?? '카메라를 켜고 얼굴을 보여주세요.',
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function createFairPlayCheckState(input: {
+  activePlayerIdentities: string[]
+  participantNamesByIdentity: Record<string, string>
+  previous?: GameFairPlayCheckState
+}): GameFairPlayCheckState {
+  const participants = Object.fromEntries(
+    input.activePlayerIdentities.map((participantIdentity) => {
+      const previousStatus = input.previous?.participants[participantIdentity]
+
+      return [
+        participantIdentity,
+        previousStatus
+          ? {
+              ...previousStatus,
+              participantName:
+                input.participantNamesByIdentity[participantIdentity]
+                ?? previousStatus.participantName,
+            }
+          : createWaitingFairPlayCheckStatus({
+              participantIdentity,
+              participantName: input.participantNamesByIdentity[participantIdentity],
+            }),
+      ]
+    }),
+  )
+
+  return {
+    startedAt: input.previous?.startedAt ?? new Date().toISOString(),
+    activePlayerIdentities: input.activePlayerIdentities,
+    participants,
+    passedAt: input.previous?.passedAt,
+  }
+}
+
+function isFairPlayCheckPassed(
+  status: GameFairPlayCheckParticipantStatus | undefined,
+): boolean {
+  return Boolean(
+    status
+    && status.cameraReady
+    && status.faceReady
+    && status.mouthReady
+    && status.smileReady
+    && status.passed,
+  )
+}
+
+function isPreGameFairPlayPhase(phase: GamePhase): boolean {
+  return (
+    phase === 'waiting'
+    || phase === 'ready'
+    || phase === 'post-game'
+    || phase === 'auto-start-pending'
+    || phase === 'fair-play-check'
+  )
+}
+
+function getActiveDefenderIdentitiesForAttack(input: {
+  defenderIdentities?: string[]
+  playerStates?: Record<string, GamePlayerState>
+}): string[] {
+  return (input.defenderIdentities ?? []).filter((participantIdentity) => (
+    !input.playerStates?.[participantIdentity]?.eliminated
+  ))
+}
+
+function mapFaceCheckUiStateToStatus(input: {
+  checkState: FairPlayCheckUiState
+  meetingId: string
+  roomCode: string
+  participantIdentity: string
+  participantName?: string
+}): GameFairPlayCheckStatus {
+  const step =
+    input.checkState.step === 'look-forward'
+      ? 'face'
+      : input.checkState.step === 'mouth-open'
+        ? 'mouth'
+      : input.checkState.step === 'failed'
+        ? input.checkState.message.includes('입') ? 'mouth' : 'face'
+      : input.checkState.step
+
+  return {
+    type: 'fair-play-check-status',
+    meetingId: input.meetingId,
+    roomCode: input.roomCode,
+    participantIdentity: input.participantIdentity,
+    participantName: input.participantName,
+    cameraReady: true,
+    faceReady:
+      step === 'mouth'
+      || step === 'smile'
+      || step === 'passed',
+    mouthReady: step === 'smile' || step === 'passed',
+    smileReady: step === 'passed',
+    passed: input.checkState.passed,
+    failed: input.checkState.failed,
+    step,
+    message: input.checkState.message,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function createCameraRequiredFairPlayStatus(input: {
+  meetingId: string
+  roomCode: string
+  participantIdentity: string
+  participantName?: string
+}): GameFairPlayCheckStatus {
+  return {
+    type: 'fair-play-check-status',
+    meetingId: input.meetingId,
+    roomCode: input.roomCode,
+    participantIdentity: input.participantIdentity,
+    participantName: input.participantName,
+    cameraReady: false,
+    faceReady: false,
+    mouthReady: false,
+    smileReady: false,
+    passed: false,
+    failed: false,
+    step: 'camera',
+    message: '카메라를 켜고 얼굴을 보여주세요.',
+    updatedAt: new Date().toISOString(),
+  }
+}
 
 type MeetingRoomPageProps = {
   meetingId: string
@@ -150,9 +584,12 @@ type MeetingRoomPageProps = {
   roomName: string
   participants: Participant[]
   participantCount: number
+  initialLives: 1 | 3 | 5
   targetLanguage: LanguageCode
   autoStartCaption: boolean
   deviceSelection: MediaDeviceSelection
+  initialHostParticipantIdentity?: string
+  initialGameState?: GameStateSnapshot
   hostControlToken?: string
   onLocalMediaChange: (media: LocalMediaState) => void
   onDeviceSelectionChange: (selection: MediaDeviceSelection) => void
@@ -171,17 +608,18 @@ type LiveKitConnectionPhase =
   | 'ended'
   | 'leaving'
 
-type ConversationTab = 'chat'
-
 export function MeetingRoomPage({
   meetingId,
   roomCode,
   roomName,
   participants,
   participantCount,
+  initialLives,
   targetLanguage,
   autoStartCaption,
   deviceSelection,
+  initialHostParticipantIdentity,
+  initialGameState,
   hostControlToken,
   onLocalMediaChange,
   onDeviceSelectionChange,
@@ -249,9 +687,6 @@ export function MeetingRoomPage({
     () => loadCaptionPreferences().size,
   )
   const [showCaptionHint, setShowCaptionHint] = useState(true)
-  const [isConversationOpen, setIsConversationOpen] = useState(true)
-  const [conversationTab, setConversationTab] =
-    useState<ConversationTab>('chat')
   const [viewMode, setViewMode] = useState<'grid' | 'focus'>('grid')
   const [selectedMainParticipantId, setSelectedMainParticipantId] = useState(
     () => (
@@ -292,9 +727,18 @@ export function MeetingRoomPage({
   const [isLiveKitConnecting, setIsLiveKitConnecting] = useState(false)
   const [isLiveKitDataReady, setIsLiveKitDataReady] = useState(false)
   const [liveKitMessage, setLiveKitMessage] = useState('')
+  const [hostTransferNotice, setHostTransferNotice] = useState('')
+  const [roomHostParticipantIdentity, setRoomHostParticipantIdentity] =
+    useState<string | undefined>(
+      initialHostParticipantIdentity
+      ?? (initialLocalParticipant?.meetingRole === 'host'
+        ? initialLocalParticipant.liveKitIdentity
+        : undefined),
+    )
+  const [roomHostControlToken, setRoomHostControlToken] =
+    useState<string | undefined>(hostControlToken)
   const [wasRemovedFromMeeting, setWasRemovedFromMeeting] = useState(false)
   const [isMeetingEndedRemotely, setIsMeetingEndedRemotely] = useState(false)
-  const [chatUnreadCount, setChatUnreadCount] = useState(0)
   const [chatSendMessage, setChatSendMessage] = useState('')
   const [recordingEnabled, setRecordingEnabled] = useState(
     () => restoredMeetingSession?.recordingEnabled ?? true,
@@ -314,24 +758,41 @@ export function MeetingRoomPage({
       : participants.slice(0, participantCount)
   })
   const [gameState, setGameState] = useState<GameStateSnapshot>(() => (
-    createGameStateSnapshot({
-      meetingId,
-      roomCode,
-      participantCount,
-      participants: roomParticipants,
-      previousRevision: 0,
-      hostParticipantIdentity:
-        initialLocalParticipant?.meetingRole === 'host'
-          ? initialLocalParticipant.liveKitIdentity
-          : undefined,
-    })
+    initialGameState
+    ?? createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: roomParticipants,
+        previousRevision: 0,
+        initialLives,
+        hostParticipantIdentity: roomHostParticipantIdentity,
+      })
   ))
   const [readyParticipantIdentities, setReadyParticipantIdentities] = useState<string[]>([])
   const [isUploadingAttackContent, setIsUploadingAttackContent] = useState(false)
   const [attackContentMessage, setAttackContentMessage] = useState('')
+  const [gameTimelineEvents, setGameTimelineEvents] =
+    useState<GameTimelineEvent[]>([])
+  const [fairPlayWarning, setFairPlayWarning] =
+    useState<FairPlayWarningState>({ active: false })
+  const [fairPlayDebug, setFairPlayDebug] =
+    useState<FairPlayDebugState | null>(null)
+  const [audioFairPlayDebug, setAudioFairPlayDebug] =
+    useState<AudioLaughDebugState | null>(null)
+  const [audioFairPlayUnavailableReason, setAudioFairPlayUnavailableReason] =
+    useState('')
+  const [autoReadyRemainingSeconds, setAutoReadyRemainingSeconds] =
+    useState<number | null>(null)
+  const [autoStartRemainingSeconds, setAutoStartRemainingSeconds] =
+    useState<number | null>(null)
+  const [copyTooltipPosition, setCopyTooltipPosition] = useState<{
+    top: number
+    left: number
+  } | null>(null)
   const copyMessageTimerRef = useRef<number | null>(null)
+  const roomCodeButtonRef = useRef<HTMLButtonElement>(null)
   const captionButtonRef = useRef<HTMLButtonElement>(null)
-  const controlBarChatButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarParticipantsButtonRef = useRef<HTMLButtonElement>(null)
   const controlBarSettingsButtonRef = useRef<HTMLButtonElement>(null)
   const autoStartAttemptedRef = useRef(false)
@@ -341,13 +802,44 @@ export function MeetingRoomPage({
   const autoStartInProgressRef = useRef(false)
   const captionRestartTimerRef = useRef<number | null>(null)
   const liveCaptionClearTimerRef = useRef<number | null>(null)
+  const hostTransferNoticeTimerRef = useRef<number | null>(null)
+  const gameAutoStartTimerRef = useRef<number | null>(null)
+  const gameAutoReadyIntervalRef = useRef<number | null>(null)
+  const gameAutoStartIntervalRef = useRef<number | null>(null)
+  const matchStartInFlightRef = useRef(false)
+  const lastAutoStartLogRemainingRef = useRef<number | null>(null)
   const countdownCompletionTimerRef = useRef<number | null>(null)
   const roleRevealCompletionTimerRef = useRef<number | null>(null)
   const attackCompletionTimerRef = useRef<number | null>(null)
   const roundTransitionTimerRef = useRef<number | null>(null)
+  const postGameTransitionTimerRef = useRef<number | null>(null)
   const processedAttackStartRequestsRef = useRef(new Set<string>())
   const processedAttackContentRequestsRef = useRef(new Set<string>())
   const screenShareStreamRef = useRef<MediaStream | null>(null)
+  const fairPlayVideoRef = useRef<HTMLVideoElement>(null)
+  const fairPlayDetectorRef = useRef<FairPlayDetector | null>(null)
+  const fairPlayDetectorModeRef = useRef<
+    'idle' | 'face-check' | 'attack-detection'
+  >('idle')
+  const fairPlayDetectorSessionKeyRef = useRef('')
+  const audioLaughDetectorRef = useRef<AudioLaughDetector | null>(null)
+  const audioLaughTrackIdRef = useRef('')
+  const fairPlayDebugRef = useRef<FairPlayDebugState | null>(null)
+  const fairPlayWarningRef =
+    useRef<FairPlayWarningState>({ active: false })
+  const fairPlayCheckStatusKeyRef = useRef('')
+  const publishFairPlayCheckStatusRef =
+    useRef<(status: GameFairPlayCheckStatus) => void>(() => undefined)
+  const localParticipantIdentityRef = useRef<string | undefined>(undefined)
+  const processedFairPlayEventIdsRef = useRef(new Set<string>())
+  const localFairPlayEventReportedRef = useRef(new Set<string>())
+  const localFairPlayAttackReportRef = useRef(new Set<string>())
+  const processedGameTimelineEventIdsRef = useRef(new Set<string>())
+  const processedGameResultSignaturesRef = useRef(new Map<string, number>())
+  const processedHostTransferEventIdsRef = useRef(new Set<string>())
+  const eliminatedParticipantRemovalTimersRef =
+    useRef(new Map<string, number>())
+  const removedEliminatedParticipantIdentitiesRef = useRef(new Set<string>())
   const liveKitMediaControllerRef =
     useRef<LiveKitMediaController | null>(null)
   const liveKitDataControllerRef =
@@ -391,6 +883,8 @@ export function MeetingRoomPage({
   }, [readyParticipantIdentities])
 
   useEffect(() => {
+    const eliminationRemovalTimers = eliminatedParticipantRemovalTimersRef.current
+
     return () => {
       speechRecognitionEnabledRef.current = false
       stopSpeechRecognition()
@@ -404,6 +898,18 @@ export function MeetingRoomPage({
       if (liveCaptionClearTimerRef.current !== null) {
         window.clearTimeout(liveCaptionClearTimerRef.current)
       }
+      if (hostTransferNoticeTimerRef.current !== null) {
+        window.clearTimeout(hostTransferNoticeTimerRef.current)
+      }
+      if (gameAutoStartTimerRef.current !== null) {
+        window.clearTimeout(gameAutoStartTimerRef.current)
+      }
+      if (gameAutoReadyIntervalRef.current !== null) {
+        window.clearInterval(gameAutoReadyIntervalRef.current)
+      }
+      if (gameAutoStartIntervalRef.current !== null) {
+        window.clearInterval(gameAutoStartIntervalRef.current)
+      }
       if (countdownCompletionTimerRef.current !== null) {
         window.clearTimeout(countdownCompletionTimerRef.current)
       }
@@ -416,9 +922,18 @@ export function MeetingRoomPage({
       if (roundTransitionTimerRef.current !== null) {
         window.clearTimeout(roundTransitionTimerRef.current)
       }
+      if (postGameTransitionTimerRef.current !== null) {
+        window.clearTimeout(postGameTransitionTimerRef.current)
+      }
+      eliminationRemovalTimers.forEach((timer) => {
+        window.clearTimeout(timer)
+      })
+      eliminationRemovalTimers.clear()
       if (meetingSessionSaveTimerRef.current !== null) {
         window.clearTimeout(meetingSessionSaveTimerRef.current)
       }
+      void fairPlayDetectorRef.current?.close()
+      void audioLaughDetectorRef.current?.close()
     }
   }, [])
 
@@ -693,8 +1208,6 @@ export function MeetingRoomPage({
   const handleToggleSpeechRecognition = () => {
     const isAutoStart = autoStartInProgressRef.current
     if (!isAutoStart) {
-      setConversationTab('chat')
-      setIsConversationOpen(true)
       setShowCaptionHint(false)
     }
 
@@ -1055,9 +1568,18 @@ export function MeetingRoomPage({
 
   const copyRoomCode = async () => {
     const copied = await copyToClipboard(roomCode)
+    const rect = roomCodeButtonRef.current?.getBoundingClientRect()
+
+    if (rect) {
+      setCopyTooltipPosition({
+        top: rect.bottom + 10,
+        left: rect.left + (rect.width / 2),
+      })
+    }
+
     setCopyMessage(
       copied
-        ? '복사되었습니다.'
+        ? '방 코드가 복사되었습니다.'
         : '복사에 실패했습니다.',
     )
 
@@ -1066,8 +1588,37 @@ export function MeetingRoomPage({
     }
     copyMessageTimerRef.current = window.setTimeout(() => {
       setCopyMessage('')
+      setCopyTooltipPosition(null)
     }, 1800)
   }
+
+  useEffect(() => {
+    if (!copyMessage) {
+      return
+    }
+
+    const updateCopyTooltipPosition = () => {
+      const rect = roomCodeButtonRef.current?.getBoundingClientRect()
+
+      if (!rect) {
+        return
+      }
+
+      setCopyTooltipPosition({
+        top: rect.bottom + 10,
+        left: rect.left + (rect.width / 2),
+      })
+    }
+
+    updateCopyTooltipPosition()
+    window.addEventListener('resize', updateCopyTooltipPosition)
+    window.addEventListener('scroll', updateCopyTooltipPosition, true)
+
+    return () => {
+      window.removeEventListener('resize', updateCopyTooltipPosition)
+      window.removeEventListener('scroll', updateCopyTooltipPosition, true)
+    }
+  }, [copyMessage])
 
   const localParticipant = roomParticipants.find(
     (participant) => participant.role === 'local',
@@ -1449,6 +2000,42 @@ export function MeetingRoomPage({
         return
       }
 
+      if (connection.hostParticipantIdentity) {
+        setRoomHostParticipantIdentity(connection.hostParticipantIdentity)
+      }
+
+      if (connection.hostControlToken) {
+        setRoomHostControlToken(connection.hostControlToken)
+      }
+
+      if (
+        connection.gameState
+        && shouldAcceptServerRoomSnapshot(
+          gameStateRef.current,
+          connection.gameState,
+        )
+      ) {
+        const scopedGameState = scopePostGameSnapshotToRoster(
+          connection.gameState,
+          gameStateRef.current,
+        )
+
+        gameStateRef.current = scopedGameState
+        setReadyParticipantIdentities(
+          scopedGameState.participants
+            .filter((participant) => participant.isReady)
+            .map((participant) => participant.participantIdentity)
+            .filter((participantIdentity): participantIdentity is string => (
+              typeof participantIdentity === 'string'
+            )),
+        )
+        setGameState(scopedGameState)
+        logRejoinDebug('server token snapshot applied', {
+          phase: scopedGameState.phase,
+          hostParticipantIdentity: scopedGameState.hostParticipantIdentity,
+        })
+      }
+
       setLiveKitConnection(connection)
       setIsLiveKitOverlayOpen(false)
       setIsSettingsOpen(false)
@@ -1510,7 +2097,9 @@ export function MeetingRoomPage({
     roomCode,
   ])
 
-  const markParticipantKicked = useCallback(() => {
+  const markParticipantKicked = useCallback((
+    reason: 'removed_by_host' | 'eliminated' = 'removed_by_host',
+  ) => {
     if (terminalPhaseRef.current === 'kicked') {
       return
     }
@@ -1526,13 +2115,16 @@ export function MeetingRoomPage({
     setIsEndingMeeting(false)
     setIsEndModalOpen(false)
     setParticipantToRemove(null)
-    setIsConversationOpen(false)
     setIsParticipantsOpen(false)
     setIsSettingsOpen(false)
     setIsLiveKitOverlayOpen(false)
     setIsScreenShareExpanded(false)
     setLiveKitStatus('kicked')
-    setLiveKitMessage('방장에 의해 방에서 퇴장되었습니다.')
+    setLiveKitMessage(
+      reason === 'eliminated'
+        ? '탈락하여 방에서 퇴장합니다.'
+        : '방장에 의해 방에서 퇴장되었습니다.',
+    )
     setIsLiveKitConnecting(false)
     setIsLiveKitConnected(false)
     setIsLiveKitDataReady(false)
@@ -1618,7 +2210,7 @@ export function MeetingRoomPage({
           targetParticipantIdentity: removedParticipant.liveKitIdentity,
           requesterParticipantIdentity: currentHost.liveKitIdentity,
           requesterMeetingRole: currentHost.meetingRole,
-          hostControlToken,
+          hostControlToken: roomHostControlToken,
         } as const
 
         await liveKitDataControllerRef.current
@@ -1732,24 +2324,37 @@ export function MeetingRoomPage({
       || (!isJoinFlow && liveKitConnectionPhase === 'local')
     )
   const displayedParticipants = useMemo(() => {
+    const applyRoomHostRole = (nextParticipants: Participant[]): Participant[] => (
+      roomHostParticipantIdentity
+        ? nextParticipants.map((participant) => ({
+            ...participant,
+            meetingRole:
+              getParticipantGameIdentity(participant) === roomHostParticipantIdentity
+                ? 'host'
+                : 'participant',
+          }))
+        : nextParticipants
+    )
+
     if (isTerminalConnectionPhase && wasRemovedFromMeeting) {
       return []
     }
 
     if (isLiveKitConnected && liveKitParticipants.length > 0) {
-      return liveKitParticipants
+      return applyRoomHostRole(liveKitParticipants)
     }
 
     if (shouldHoldVideoForConnection || !canUseMockParticipants) {
       return []
     }
 
-    return roomParticipants
+    return applyRoomHostRole(roomParticipants)
   }, [
     canUseMockParticipants,
     isTerminalConnectionPhase,
     isLiveKitConnected,
     liveKitParticipants,
+    roomHostParticipantIdentity,
     roomParticipants,
     shouldHoldVideoForConnection,
     wasRemovedFromMeeting,
@@ -1757,7 +2362,6 @@ export function MeetingRoomPage({
   const displayedLocalParticipant = displayedParticipants.find(
     (participant) => participant.role === 'local',
   )
-
   const activeReadyParticipantIdentities = useMemo(
     () => filterReadyParticipantIdentities(
       displayedParticipants,
@@ -1829,8 +2433,6 @@ export function MeetingRoomPage({
     recordingEnabled,
   ])
 
-  const isCurrentUserHost =
-    (displayedLocalParticipant ?? localParticipant)?.meetingRole === 'host'
   const localParticipantIdentity =
     displayedLocalParticipant?.liveKitIdentity
     ?? liveKitConnection?.participantIdentity
@@ -1839,6 +2441,18 @@ export function MeetingRoomPage({
         ? String(displayedLocalParticipant.id)
         : undefined
     )
+  const authoritativeHostParticipantIdentity =
+    roomHostParticipantIdentity ?? gameState.hostParticipantIdentity
+  const isCurrentUserHost =
+    Boolean(
+      localParticipantIdentity
+      && authoritativeHostParticipantIdentity
+      && localParticipantIdentity === authoritativeHostParticipantIdentity,
+    )
+    || (
+      !authoritativeHostParticipantIdentity
+      && (displayedLocalParticipant ?? localParticipant)?.meetingRole === 'host'
+    )
   const gameStatusText =
     `${gameState.connectedParticipantCount}/${gameState.participantCount}명`
   const readyStatusText =
@@ -1846,25 +2460,210 @@ export function MeetingRoomPage({
   const isLocalParticipantReady = localParticipantIdentity
     ? activeReadyParticipantIdentities.includes(localParticipantIdentity)
     : false
+  const localFairPlayCheckStatus:
+    GameFairPlayCheckParticipantStatus | undefined = undefined
+
+  useEffect(() => {
+    localParticipantIdentityRef.current = localParticipantIdentity
+  }, [localParticipantIdentity])
+
+  useEffect(() => {
+    logLocalParticipantDebug({
+      identity: localParticipantIdentity,
+      name: displayedLocalParticipant?.name,
+      liveKitIdentity: displayedLocalParticipant?.liveKitIdentity,
+      role: displayedLocalParticipant?.role,
+      meetingRole: displayedLocalParticipant?.meetingRole,
+      detectorTarget: displayedLocalParticipant?.liveKitIdentity,
+      hasLocalStream: Boolean(displayedLocalParticipant?.mediaStream),
+    })
+  }, [
+    displayedLocalParticipant?.liveKitIdentity,
+    displayedLocalParticipant?.mediaStream,
+    displayedLocalParticipant?.meetingRole,
+    displayedLocalParticipant?.name,
+    displayedLocalParticipant?.role,
+    localParticipantIdentity,
+  ])
+
+  useEffect(() => {
+    logRoomAuthorityDebug({
+      roomCode,
+      hostParticipantIdentity: authoritativeHostParticipantIdentity,
+      localParticipantIdentity,
+      isCurrentUserHost,
+      participants: displayedParticipants.map((participant) => ({
+        identity: getParticipantGameIdentity(participant),
+        name: participant.name,
+        role: participant.role,
+        meetingRole: participant.meetingRole,
+      })),
+    })
+  }, [
+    authoritativeHostParticipantIdentity,
+    displayedParticipants,
+    isCurrentUserHost,
+    localParticipantIdentity,
+    roomCode,
+  ])
+
+  const applyHostChanged = useCallback((payload: {
+    meetingId: string
+    roomName: string
+    previousHostParticipantIdentity: string
+    newHostParticipantIdentity: string
+    newHostName: string
+    newHostControlToken?: string
+    changedAt: string
+    reason: 'host_eliminated' | 'host_left'
+  }) => {
+    if (
+      payload.meetingId !== meetingId
+      || payload.roomName !== (liveKitConnection?.roomName ?? roomCode)
+    ) {
+      return
+    }
+
+    const transferEventId = [
+      payload.previousHostParticipantIdentity,
+      payload.newHostParticipantIdentity,
+      payload.changedAt,
+    ].join(':')
+
+    logHostTransferDebug('host changed', {
+      from: payload.previousHostParticipantIdentity,
+      to: payload.newHostParticipantIdentity,
+      reason: payload.reason,
+    })
+    if (!processedHostTransferEventIdsRef.current.has(transferEventId)) {
+      processedHostTransferEventIdsRef.current.add(transferEventId)
+      const systemMessage = createSystemMessage({
+        meetingId,
+        message: `${payload.newHostName}님이 새 방장이 되었습니다.`,
+      })
+      setChatMessages((current) => dedupeChatMessages([
+        ...current,
+        systemMessage,
+      ]))
+    }
+    setRoomHostParticipantIdentity(payload.newHostParticipantIdentity)
+    setGameState((current) => {
+      const nextSnapshot = {
+        ...current,
+        hostParticipantIdentity: payload.newHostParticipantIdentity,
+        participants: current.participants.map((participant) => ({
+          ...participant,
+          role:
+            participant.participantIdentity === payload.newHostParticipantIdentity
+              ? 'host'
+              : 'participant',
+        })),
+        updatedAt: payload.changedAt,
+      } satisfies GameStateSnapshot
+
+      gameStateRef.current = nextSnapshot
+      gameStateSnapshotKeyRef.current = getGameStateSnapshotKey(nextSnapshot)
+      return nextSnapshot
+    })
+    setLiveKitParticipants((current) => current.map((participant) => ({
+      ...participant,
+      meetingRole:
+        getParticipantGameIdentity(participant)
+          === payload.newHostParticipantIdentity
+          ? 'host'
+          : 'participant',
+    })))
+    setRoomParticipants((current) => current.map((participant) => ({
+      ...participant,
+      meetingRole:
+        getParticipantGameIdentity(participant)
+          === payload.newHostParticipantIdentity
+          ? 'host'
+          : 'participant',
+    })))
+
+    if (
+      payload.newHostControlToken
+      && localParticipantIdentityRef.current === payload.newHostParticipantIdentity
+    ) {
+      setRoomHostControlToken(payload.newHostControlToken)
+      setLiveKitMessage('방장 권한을 이어받았습니다.')
+      setHostTransferNotice('YOU ARE HOST')
+      if (hostTransferNoticeTimerRef.current !== null) {
+        window.clearTimeout(hostTransferNoticeTimerRef.current)
+      }
+      hostTransferNoticeTimerRef.current = window.setTimeout(() => {
+        setHostTransferNotice('')
+        hostTransferNoticeTimerRef.current = null
+      }, 3500)
+      logPostGameDebug('authority changed', {
+        hostParticipantIdentity: payload.newHostParticipantIdentity,
+      })
+    }
+  }, [liveKitConnection?.roomName, meetingId, roomCode])
+
   const canToggleReady =
     Boolean(localParticipantIdentity)
     && isLiveKitDataReady
-    && (gameState.phase === 'waiting' || gameState.phase === 'ready')
+    && (
+      gameState.phase === 'waiting'
+      || gameState.phase === 'ready'
+      || gameState.phase === 'post-game'
+    )
   const canStartGame =
     isCurrentUserHost
     && gameState.phase === 'ready'
     && gameState.connectedParticipantCount >= 2
+    && gameState.connectedParticipantCount >= gameState.participantCount
     && gameState.readyParticipantCount === gameState.connectedParticipantCount
+
+  useEffect(() => {
+    if (
+      gameState.phase !== 'waiting'
+      && gameState.phase !== 'ready'
+      && gameState.phase !== 'post-game'
+    ) {
+      return
+    }
+
+    logNextMatchDebug('state', {
+      ready: `${gameState.readyParticipantCount}/${gameState.connectedParticipantCount}`,
+      host: roomHostParticipantIdentity,
+      localParticipantIdentity,
+      isHost: isCurrentUserHost,
+      canStart: canStartGame,
+      phase: gameState.phase,
+    })
+  }, [
+    canStartGame,
+    gameState.connectedParticipantCount,
+    gameState.phase,
+    gameState.readyParticipantCount,
+    isCurrentUserHost,
+    localParticipantIdentity,
+    roomHostParticipantIdentity,
+  ])
+
   const canRequestAttackStart =
     Boolean(localParticipantIdentity)
     && gameState.phase === 'attack-ready'
     && gameState.attackerIdentity === localParticipantIdentity
     && typeof gameState.roundNumber === 'number'
     && Boolean(gameState.attackContent)
+  const shouldShowGameRoleBadges =
+    gameState.phase === 'role-reveal'
+    || gameState.phase === 'attack-ready'
+    || gameState.phase === 'attack-active'
+    || gameState.phase === 'attack-ended'
+    || gameState.phase === 'round-result'
+    || gameState.phase === 'round-ended'
   const localGameRole =
-    localParticipantIdentity && gameState.attackerIdentity === localParticipantIdentity
+    shouldShowGameRoleBadges
+      && localParticipantIdentity
+      && gameState.attackerIdentity === localParticipantIdentity
       ? 'attacker'
-      : localParticipantIdentity
+      : shouldShowGameRoleBadges
+        && localParticipantIdentity
         && gameState.defenderIdentities?.includes(localParticipantIdentity)
         ? 'defender'
         : undefined
@@ -1878,10 +2677,243 @@ export function MeetingRoomPage({
       ),
     )?.name
     ?? '공격자'
+  const getGameParticipantName = useCallback((participantIdentity?: string) => (
+    gameState.participants.find(
+      (participant) => participant.participantIdentity === participantIdentity,
+    )?.name
+    ?? displayedParticipants.find(
+      (participant) => (
+        getParticipantGameIdentity(participant) === participantIdentity
+      ),
+    )?.name
+    ?? participantIdentity
+    ?? '참가자'
+  ), [displayedParticipants, gameState.participants])
+  const appendGameTimelineEvent = useCallback((event: GameTimelineEvent) => {
+    if (processedGameTimelineEventIdsRef.current.has(event.id)) {
+      return
+    }
+
+    processedGameTimelineEventIdsRef.current.add(event.id)
+    setGameTimelineEvents((current) => [...current, event])
+  }, [])
+
+  useEffect(() => {
+    if (
+      gameState.phase !== 'attack-active'
+      || !gameState.attackContent
+      || typeof gameState.attackSequence !== 'number'
+    ) {
+      return
+    }
+
+    const attackId = [
+      gameState.roundNumber ?? 'round',
+      gameState.attackSequence,
+      gameState.attackerIdentity ?? 'attacker',
+    ].join(':')
+
+    appendGameTimelineEvent({
+      id: `attack:${attackId}`,
+      type: 'attack',
+      attackId,
+      participantIdentity: gameState.attackerIdentity,
+      displayName: getGameParticipantName(gameState.attackerIdentity),
+      media: gameState.attackContent,
+      timestamp: gameState.attackStartedAt ?? gameState.updatedAt,
+    })
+  }, [
+    appendGameTimelineEvent,
+    gameState.attackContent,
+    gameState.attackSequence,
+    gameState.attackStartedAt,
+    gameState.attackerIdentity,
+    gameState.phase,
+    gameState.roundNumber,
+    gameState.updatedAt,
+    getGameParticipantName,
+  ])
+
+  useEffect(() => {
+    if (
+      gameState.phase !== 'attack-ended'
+      && gameState.phase !== 'post-game'
+      || typeof gameState.attackSequence !== 'number'
+    ) {
+      return
+    }
+
+    const attackId = [
+      gameState.roundNumber ?? 'round',
+      gameState.attackSequence,
+      gameState.attackerIdentity ?? 'attacker',
+    ].join(':')
+    const hitIdentities =
+      gameState.penalizedParticipantIdentitiesForCurrentAttack ?? []
+    const hitIdentitySet = new Set(hitIdentities)
+    const defenderResults = (gameState.defenderIdentities ?? []).map(
+      (participantIdentity) => ({
+        participantIdentity,
+        displayName: getGameParticipantName(participantIdentity),
+        hit: hitIdentitySet.has(participantIdentity),
+        eliminated:
+          gameState.playerStates?.[participantIdentity]?.eliminated ?? false,
+      }),
+    )
+    const title =
+      gameState.attackEndReason === 'all-defenders-hit'
+        ? 'ALL DEFENDERS HIT!'
+        : 'ATTACK RESULT'
+    const message = hitIdentities.length
+      ? hitIdentities
+        .map((participantIdentity) => (
+          `${getGameParticipantName(participantIdentity)} LIFE -1`
+        ))
+        .join(' · ')
+      : '아무도 웃지 않았습니다.'
+
+    appendGameTimelineEvent({
+      id: `attack-result:${attackId}:${gameState.attackEndReason ?? 'ended'}`,
+      type: 'attack-result',
+      attackId,
+      title,
+      message,
+      defenderResults,
+      timestamp: gameState.updatedAt,
+    })
+  }, [
+    appendGameTimelineEvent,
+    gameState.attackEndReason,
+    gameState.attackSequence,
+    gameState.attackerIdentity,
+    gameState.defenderIdentities,
+    gameState.penalizedParticipantIdentitiesForCurrentAttack,
+    gameState.phase,
+    gameState.playerStates,
+    gameState.roundNumber,
+    gameState.updatedAt,
+    getGameParticipantName,
+  ])
+
+  useEffect(() => {
+    if (gameState.phase !== 'post-game') {
+      return
+    }
+
+    const winnerIdentity =
+      gameState.activePlayerIdentities?.length === 1
+        ? gameState.activePlayerIdentities[0]
+        : undefined
+
+    if (!winnerIdentity) {
+      return
+    }
+
+    const eliminatedParticipants = Object.entries(gameState.playerStates ?? {})
+      .filter(([, playerState]) => playerState.eliminated)
+      .map(([participantIdentity]) => ({
+        participantIdentity,
+        displayName: getGameParticipantName(participantIdentity),
+      }))
+    const winnerName = getGameParticipantName(winnerIdentity)
+    const resultSignature = [
+      winnerIdentity,
+      eliminatedParticipants
+        .map((participant) => participant.participantIdentity)
+        .sort()
+        .join(','),
+    ].join('|')
+    const lastPublishedAt =
+      processedGameResultSignaturesRef.current.get(resultSignature)
+
+    if (lastPublishedAt && Date.now() - lastPublishedAt < 10_000) {
+      logGameResultDebug('duplicate ignored', {
+        matchId: resultSignature,
+        winnerIdentity,
+      })
+      return
+    }
+
+    processedGameResultSignaturesRef.current.set(resultSignature, Date.now())
+
+    appendGameTimelineEvent({
+      id: [
+        'game-result',
+        resultSignature,
+        winnerIdentity,
+      ].join(':'),
+      type: 'game-result',
+      title: 'GAME RESULT',
+      message: `${winnerName} WINS!`,
+      winnerParticipantIdentity: winnerIdentity,
+      winnerName,
+      eliminatedParticipants,
+      timestamp: gameState.updatedAt,
+    })
+    logGameResultDebug('published=true', {
+      matchId: resultSignature,
+      winnerIdentity,
+    })
+  }, [
+    appendGameTimelineEvent,
+    gameState.activePlayerIdentities,
+    gameState.attackSequence,
+    gameState.phase,
+    gameState.playerStates,
+    gameState.roundNumber,
+    gameState.updatedAt,
+    getGameParticipantName,
+  ])
+
+  useEffect(() => {
+    Object.entries(gameState.playerStates ?? {}).forEach(
+      ([participantIdentity, playerState]) => {
+        if (!playerState.eliminated) {
+          return
+        }
+
+        appendGameTimelineEvent({
+          id: `elimination:${participantIdentity}`,
+          type: 'elimination',
+          participantIdentity,
+          displayName: getGameParticipantName(participantIdentity),
+          timestamp: gameState.updatedAt,
+        })
+      },
+    )
+  }, [
+    appendGameTimelineEvent,
+    gameState.playerStates,
+    gameState.updatedAt,
+    getGameParticipantName,
+  ])
+  const participantNamesByIdentity = useMemo(() => (
+    Object.fromEntries(
+      displayedParticipants
+        .slice(0, participantCount)
+        .map((participant) => [
+          getParticipantGameIdentity(participant),
+          participant.name,
+        ]),
+    )
+  ), [displayedParticipants, participantCount])
+  const fairPlayCheckParticipants = useMemo(() => [], [])
+  const winnerName =
+    gameState.phase === 'game-over'
+      ? getGameParticipantName(gameState.attackerIdentity)
+      : undefined
   const connectionLoadingTitle =
     liveKitConnectionPhase === 'connected' && liveKitParticipants.length === 0
       ? '참가자 정보를 불러오는 중입니다...'
       : '방에 연결 중입니다...'
+
+  useEffect(() => {
+    logFairPlayCheckDebug('phase received', {
+      participantIdentity: localParticipantIdentity,
+      role: isCurrentUserHost ? 'host' : 'guest',
+      phase: gameState.phase,
+    })
+  }, [gameState.phase, isCurrentUserHost, localParticipantIdentity])
 
   const createCurrentGameStateSnapshot = useCallback(() => {
     const currentGameState = gameStateRef.current
@@ -1891,17 +2923,23 @@ export function MeetingRoomPage({
         .map(getParticipantGameIdentity),
     )
     let phase: GamePhase | undefined = (
-      currentGameState.phase === 'countdown'
+      currentGameState.phase === 'auto-start-pending'
+      || currentGameState.phase === 'countdown'
       || currentGameState.phase === 'game-started'
       || currentGameState.phase === 'role-reveal'
       || currentGameState.phase === 'attack-ready'
       || currentGameState.phase === 'attack-active'
       || currentGameState.phase === 'attack-ended'
+      || currentGameState.phase === 'round-result'
       || currentGameState.phase === 'round-ended'
+      || currentGameState.phase === 'game-over'
     )
       ? currentGameState.phase
       : undefined
     let activePlayerIdentities = currentGameState.activePlayerIdentities
+    let autoStartAt = currentGameState.autoStartAt
+    let gameOverAt = currentGameState.gameOverAt
+    let postGameAt = currentGameState.postGameAt
     let turnOrder = currentGameState.turnOrder
     let currentTurnIndex = currentGameState.currentTurnIndex
     let attackerIdentity = currentGameState.attackerIdentity
@@ -1911,14 +2949,55 @@ export function MeetingRoomPage({
     let attackStartedAt = currentGameState.attackStartedAt
     let attackDurationMs = currentGameState.attackDurationMs
     let attackEndsAt = currentGameState.attackEndsAt
-    const attackSequence = currentGameState.attackSequence
+    let attackEndReason = currentGameState.attackEndReason
+    let attackSequence = currentGameState.attackSequence
     let attackContent = currentGameState.attackContent
+    let playerStates = currentGameState.playerStates
+    let roundResult = currentGameState.roundResult
+    let fairPlay = currentGameState.fairPlay
+
+    if (currentGameState.phase !== 'ready') {
+      autoStartAt = undefined
+    }
+
+    if (currentGameState.phase !== 'game-over') {
+      gameOverAt = undefined
+      postGameAt = undefined
+    }
+
+    if (currentGameState.phase === 'post-game') {
+      activePlayerIdentities = undefined
+      turnOrder = undefined
+      currentTurnIndex = undefined
+      attackerIdentity = undefined
+      defenderIdentities = undefined
+      roleRevealStartedAt = undefined
+      roleRevealDurationMs = undefined
+      attackStartedAt = undefined
+      attackDurationMs = undefined
+      attackEndsAt = undefined
+      attackEndReason = undefined
+      attackSequence = undefined
+      attackContent = null
+      playerStates = undefined
+      roundResult = null
+      gameOverAt = undefined
+      postGameAt = undefined
+    }
+
+    if (!phase || phase === 'auto-start-pending') {
+      fairPlay = currentGameState.fairPlay?.lastEvent
+        ? { lastEvent: currentGameState.fairPlay.lastEvent }
+        : undefined
+    }
     const shouldReconcileRoles =
       phase === 'role-reveal'
       || phase === 'attack-ready'
       || phase === 'attack-active'
       || phase === 'attack-ended'
+      || phase === 'round-result'
       || phase === 'round-ended'
+      || phase === 'game-over'
 
     if (shouldReconcileRoles) {
       activePlayerIdentities = (activePlayerIdentities ?? []).filter(
@@ -1937,7 +3016,11 @@ export function MeetingRoomPage({
         attackStartedAt = undefined
         attackDurationMs = undefined
         attackEndsAt = undefined
+        attackEndReason = undefined
         attackContent = null
+        playerStates = undefined
+        roundResult = null
+        fairPlay = undefined
       } else {
         turnOrder = (turnOrder ?? activePlayerIdentities).filter(
           (participantIdentity) => activePlayerIdentities?.includes(participantIdentity),
@@ -1960,6 +3043,7 @@ export function MeetingRoomPage({
             attackEndsAt = undefined
           }
           attackContent = null
+          roundResult = null
         }
 
         currentTurnIndex = Math.max(
@@ -1983,6 +3067,10 @@ export function MeetingRoomPage({
       previousRevision: currentGameState.revision,
       hostParticipantIdentity: currentGameState.hostParticipantIdentity,
       readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
+      autoStartAt,
+      gameOverAt,
+      postGameAt,
       phase,
       countdownStartedAt: currentGameState.countdownStartedAt,
       countdownDurationMs: currentGameState.countdownDurationMs,
@@ -1997,8 +3085,12 @@ export function MeetingRoomPage({
       attackStartedAt,
       attackDurationMs,
       attackEndsAt,
+      attackEndReason,
       attackSequence,
       attackContent,
+      playerStates,
+      roundResult,
+      fairPlay,
     })
   }, [
     displayedParticipants,
@@ -2006,6 +3098,7 @@ export function MeetingRoomPage({
     meetingId,
     participantCount,
     roomCode,
+    initialLives,
   ])
 
   const publishGameStateSnapshot = useCallback(async (
@@ -2050,10 +3143,199 @@ export function MeetingRoomPage({
     roomCode,
   ])
 
+  const applyFairPlayCheckStatusFromHost = useCallback((
+    status: GameFairPlayCheckStatus,
+  ) => {
+    const currentGameState = gameStateRef.current
+    const activePlayerIdentities = displayedParticipants
+      .slice(0, participantCount)
+      .map(getParticipantGameIdentity)
+
+    if (
+      !isCurrentUserHost
+      || status.meetingId !== meetingId
+      || status.roomCode !== roomCode
+      || !isPreGameFairPlayPhase(currentGameState.phase)
+      || !activePlayerIdentities.includes(status.participantIdentity)
+    ) {
+      return
+    }
+
+    logFairPlayCheckDebug('participant status received', {
+      participantIdentity: status.participantIdentity,
+      step: status.step,
+      cameraReady: status.cameraReady,
+      faceReady: status.faceReady,
+      mouthReady: status.mouthReady,
+      smileReady: status.smileReady,
+      passed: status.passed,
+    })
+
+    const nextCheck = createFairPlayCheckState({
+      activePlayerIdentities,
+      participantNamesByIdentity,
+      previous: currentGameState.fairPlay?.check,
+    })
+    nextCheck.participants[status.participantIdentity] = {
+      participantIdentity: status.participantIdentity,
+      participantName: status.participantName,
+      cameraReady: status.cameraReady,
+      faceReady: status.faceReady,
+      mouthReady: status.mouthReady,
+      smileReady: status.smileReady,
+      passed: status.passed,
+      failed: status.failed,
+      step: status.step,
+      message: status.message,
+      checkVersion: status.checkVersion,
+      calibrationVersion: status.calibrationVersion,
+      updatedAt: status.updatedAt,
+    }
+
+    const nextSnapshot = createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: currentGameState.revision,
+      hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+      readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
+      phase: currentGameState.phase === 'fair-play-check'
+        ? undefined
+        : currentGameState.phase,
+      roundNumber: currentGameState.roundNumber,
+      activePlayerIdentities: currentGameState.activePlayerIdentities,
+      turnOrder: currentGameState.turnOrder,
+      currentTurnIndex: currentGameState.currentTurnIndex,
+      playerStates: currentGameState.playerStates,
+      roundResult: null,
+      fairPlay: {
+        ...currentGameState.fairPlay,
+        check: nextCheck,
+      },
+    })
+    const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+    if (snapshotKey === gameStateSnapshotKeyRef.current) {
+      return
+    }
+
+    gameStateSnapshotKeyRef.current = snapshotKey
+    gameStateRef.current = nextSnapshot
+    setGameState(nextSnapshot)
+    publishedGameStateSnapshotRef.current = snapshotKey
+    logFairPlayCheckDebug('aggregate updated', {
+      participantIdentity: status.participantIdentity,
+      activePlayerCount: activePlayerIdentities.length,
+      passedCount: activePlayerIdentities.filter((participantIdentity) => (
+        isFairPlayCheckPassed(nextCheck.participants[participantIdentity])
+      )).length,
+    })
+    if (import.meta.env.DEV) {
+      console.info('[fair-play-shared]', {
+        identity: status.participantIdentity,
+        status: status.passed ? 'passed' : 'checking',
+        host: currentGameState.hostParticipantIdentity,
+      })
+    }
+    void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    initialLives,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    participantNamesByIdentity,
+    publishGameStateSnapshot,
+    roomCode,
+  ])
+
+  const publishFairPlayCheckStatus = useCallback((
+    status: GameFairPlayCheckStatus,
+  ) => {
+    const statusKey = JSON.stringify({
+      participantIdentity: status.participantIdentity,
+      cameraReady: status.cameraReady,
+      faceReady: status.faceReady,
+      mouthReady: status.mouthReady,
+      smileReady: status.smileReady,
+      passed: status.passed,
+      failed: status.failed,
+      step: status.step,
+      message: status.message,
+      checkVersion: status.checkVersion,
+      calibrationVersion: status.calibrationVersion,
+    })
+
+    if (statusKey === fairPlayCheckStatusKeyRef.current) {
+      return
+    }
+
+    fairPlayCheckStatusKeyRef.current = statusKey
+
+    logFairPlayCheckDebug('status changed', {
+      participantIdentity: status.participantIdentity,
+      step: status.step,
+      cameraReady: status.cameraReady,
+      faceReady: status.faceReady,
+      mouthReady: status.mouthReady,
+      smileReady: status.smileReady,
+      passed: status.passed,
+    })
+    if (import.meta.env.DEV && status.passed) {
+      console.info('[fair-play-publish]', {
+        identity: status.participantIdentity,
+        status: 'passed',
+        camera: status.cameraReady,
+        face: status.faceReady,
+        mouth: status.mouthReady,
+        smile: status.smileReady,
+      })
+    }
+
+    if (isCurrentUserHost) {
+      applyFairPlayCheckStatusFromHost(status)
+      return
+    }
+
+    const controller = liveKitDataControllerRef.current
+
+    if (!controller || !isLiveKitConnected || !isLiveKitDataReady) {
+      return
+    }
+
+    void controller.publishGameMessage({
+      type: 'fair-play-check-status',
+      payload: status,
+    }).catch((error) => {
+      console.warn('[livekit-game] Failed to publish fair play check status', error)
+    })
+    logFairPlayCheckDebug('status published', {
+      participantIdentity: status.participantIdentity,
+      step: status.step,
+      passed: status.passed,
+    })
+  }, [
+    applyFairPlayCheckStatusFromHost,
+    isCurrentUserHost,
+    isLiveKitConnected,
+    isLiveKitDataReady,
+  ])
+
+  useEffect(() => {
+    publishFairPlayCheckStatusRef.current = publishFairPlayCheckStatus
+  }, [publishFairPlayCheckStatus])
+
   const handleToggleReady = useCallback(() => {
     if (
       !localParticipantIdentity
-      || !(gameStateRef.current.phase === 'waiting' || gameStateRef.current.phase === 'ready')
+      || !(
+        gameStateRef.current.phase === 'waiting'
+        || gameStateRef.current.phase === 'ready'
+        || gameStateRef.current.phase === 'post-game'
+      )
     ) {
       return
     }
@@ -2103,28 +3385,179 @@ export function MeetingRoomPage({
     roomCode,
   ])
 
-  const handleStartGame = useCallback(() => {
+  useEffect(() => {
+    if (gameAutoReadyIntervalRef.current !== null) {
+      window.clearInterval(gameAutoReadyIntervalRef.current)
+      gameAutoReadyIntervalRef.current = null
+    }
+
+    const shouldAutoReady =
+      Boolean(localParticipantIdentity)
+      && isLiveKitDataReady
+      && (
+        gameState.phase === 'waiting'
+        || gameState.phase === 'ready'
+        || gameState.phase === 'post-game'
+      )
+      && !isLocalParticipantReady
+      && !wasRemovedFromMeeting
+
+    if (!shouldAutoReady) {
+      const resetTimer = window.setTimeout(() => {
+        setAutoReadyRemainingSeconds(null)
+      }, 0)
+
+      return () => window.clearTimeout(resetTimer)
+    }
+
+    const startedAt = Date.now()
+    const updateRemaining = () => {
+      const remainingMs = Math.max(
+        0,
+        GAME_AUTO_READY_DELAY_MS - (Date.now() - startedAt),
+      )
+      setAutoReadyRemainingSeconds(Math.ceil(remainingMs / 1000))
+
+      if (remainingMs <= 0) {
+        if (gameAutoReadyIntervalRef.current !== null) {
+          window.clearInterval(gameAutoReadyIntervalRef.current)
+          gameAutoReadyIntervalRef.current = null
+        }
+        setAutoReadyRemainingSeconds(null)
+        handleToggleReady()
+      }
+    }
+
+    const firstTickTimer = window.setTimeout(updateRemaining, 0)
+    gameAutoReadyIntervalRef.current = window.setInterval(updateRemaining, 250)
+
+    return () => {
+      window.clearTimeout(firstTickTimer)
+      if (gameAutoReadyIntervalRef.current !== null) {
+        window.clearInterval(gameAutoReadyIntervalRef.current)
+        gameAutoReadyIntervalRef.current = null
+      }
+    }
+  }, [
+    gameState.phase,
+    handleToggleReady,
+    isLiveKitDataReady,
+    isLocalParticipantReady,
+    localParticipantIdentity,
+    wasRemovedFromMeeting,
+  ])
+
+  const cancelGameAutoStartTimers = useCallback((reason: string) => {
+    let cancelled = false
+    if (gameAutoStartTimerRef.current !== null) {
+      window.clearTimeout(gameAutoStartTimerRef.current)
+      gameAutoStartTimerRef.current = null
+      cancelled = true
+    }
+    if (gameAutoStartIntervalRef.current !== null) {
+      window.clearInterval(gameAutoStartIntervalRef.current)
+      gameAutoStartIntervalRef.current = null
+      cancelled = true
+    }
+    if (cancelled) {
+      logAutoStartDebug(
+        reason === 'manual-start' ? 'cancelled by manual start' : 'cancelled',
+        { reason },
+      )
+    }
+  }, [])
+
+  const handleStartGame = useCallback((source: 'manual' | 'auto' = 'manual') => {
+    const startSource = source === 'auto' ? 'auto' : 'manual'
+    const currentGameState = gameStateRef.current
+
     if (
       !isCurrentUserHost
-      || gameStateRef.current.phase !== 'ready'
-      || gameStateRef.current.connectedParticipantCount < 2
-      || gameStateRef.current.readyParticipantCount
-        !== gameStateRef.current.connectedParticipantCount
+      || currentGameState.phase !== 'ready'
+      || currentGameState.connectedParticipantCount < 2
+      || currentGameState.connectedParticipantCount
+        < currentGameState.participantCount
+      || currentGameState.readyParticipantCount
+        !== currentGameState.connectedParticipantCount
     ) {
       return
     }
 
+    if (matchStartInFlightRef.current) {
+      logMatchStartDebug('duplicate start ignored', {
+        source: startSource,
+        phase: currentGameState.phase,
+        revision: currentGameState.revision,
+      })
+      return
+    }
+
+    const activePlayerIdentities =
+      getActivePlayerIdentities({
+        participants: displayedParticipants,
+        participantCount,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+      })
+
+    if (activePlayerIdentities.length < 2) {
+      return
+    }
+
+    const fairPlayCheck = createFairPlayCheckState({
+      activePlayerIdentities,
+      participantNamesByIdentity,
+      previous: currentGameState.fairPlay?.check,
+    })
+    const allPassed = activePlayerIdentities.every((participantIdentity) => (
+      isFairPlayCheckPassed(fairPlayCheck.participants[participantIdentity])
+    ))
+
+    if (!allPassed) {
+      return
+    }
+
+    matchStartInFlightRef.current = true
+    cancelGameAutoStartTimers(`${startSource}-start`)
+    setAutoStartRemainingSeconds(null)
+    logMatchStartDebug(
+      startSource === 'auto' ? 'auto-start fired' : 'host manual start',
+      {
+        revision: currentGameState.revision,
+        participantCount: currentGameState.connectedParticipantCount,
+        roster: activePlayerIdentities,
+      },
+    )
+
+    const turnOrder = createTurnOrder(activePlayerIdentities)
+    const now = new Date().toISOString()
     const nextSnapshot = createGameStateSnapshot({
       meetingId,
       roomCode,
       participantCount,
       participants: displayedParticipants,
-      previousRevision: gameStateRef.current.revision,
-      hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
+      previousRevision: currentGameState.revision,
+      hostParticipantIdentity: currentGameState.hostParticipantIdentity,
       readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
       phase: 'countdown',
-      countdownStartedAt: new Date().toISOString(),
+      countdownStartedAt: now,
       countdownDurationMs: GAME_COUNTDOWN_DURATION_MS,
+      roundNumber: currentGameState.roundNumber ?? 1,
+      activePlayerIdentities,
+      turnOrder,
+      currentTurnIndex: currentGameState.currentTurnIndex ?? 0,
+      playerStates: createInitialPlayerStates(
+        activePlayerIdentities,
+        currentGameState.initialLives ?? initialLives,
+      ),
+      roundResult: null,
+      fairPlay: {
+        ...currentGameState.fairPlay,
+        check: {
+          ...fairPlayCheck,
+          passedAt: now,
+        },
+      },
     })
 
     const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
@@ -2133,15 +3566,351 @@ export function MeetingRoomPage({
     gameStateRef.current = nextSnapshot
     setGameState(nextSnapshot)
     publishedGameStateSnapshotRef.current = snapshotKey
+    logMatchStartDebug('countdown started', {
+      source: startSource,
+      countdownStartedAt: nextSnapshot.countdownStartedAt,
+      countdownDurationMs: nextSnapshot.countdownDurationMs,
+      revision: nextSnapshot.revision,
+    })
     void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    activeReadyParticipantIdentities,
+    cancelGameAutoStartTimers,
+    displayedParticipants,
+    initialLives,
+    isCurrentUserHost,
+    meetingId,
+    participantNamesByIdentity,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+  ])
+
+  const applyFairPlayEventFromHost = useCallback((
+    senderParticipantIdentity: string,
+    event: Pick<
+      GameFairPlayEventRequest,
+      'eventId' | 'reason' | 'roundNumber' | 'attackSequence' | 'detectedAt'
+    >,
+  ) => {
+    const currentGameState = gameStateRef.current
+    const attackId = [
+      currentGameState.roundNumber ?? event.roundNumber,
+      currentGameState.attackSequence ?? event.attackSequence ?? 'attack',
+      currentGameState.attackerIdentity ?? 'attacker',
+    ].join(':')
+    const remainingLife =
+      currentGameState.playerStates?.[senderParticipantIdentity]?.lives
+      ?? currentGameState.initialLives
+      ?? initialLives
+
+    if (processedFairPlayEventIdsRef.current.has(event.eventId)) {
+      logGameDamageDebug('damage ignored: duplicate event', {
+        attackId,
+        defenderIdentity: senderParticipantIdentity,
+        damageApplied: false,
+        remainingLife,
+      })
+      return
+    }
+
+    processedFairPlayEventIdsRef.current.add(event.eventId)
+
+    if (
+      !isCurrentUserHost
+      || currentGameState.phase !== 'attack-active'
+      || currentGameState.roundNumber !== event.roundNumber
+      || currentGameState.attackSequence !== event.attackSequence
+      || !currentGameState.activePlayerIdentities?.includes(senderParticipantIdentity)
+      || currentGameState.attackerIdentity === senderParticipantIdentity
+      || !currentGameState.defenderIdentities?.includes(senderParticipantIdentity)
+      || currentGameState.playerStates?.[senderParticipantIdentity]?.eliminated
+    ) {
+      logGameDamageDebug('damage ignored: invalid attack state', {
+        attackId,
+        defenderIdentity: senderParticipantIdentity,
+        damageApplied: false,
+        remainingLife,
+      })
+      return
+    }
+
+    if (
+      currentGameState.penalizedParticipantIdentitiesForCurrentAttack
+        ?.includes(senderParticipantIdentity)
+    ) {
+      logGameDamageDebug('damage ignored: already applied this attack', {
+        attackId,
+        defenderIdentity: senderParticipantIdentity,
+        damageApplied: false,
+        remainingLife,
+      })
+      return
+    }
+
+    const playerStates = {
+      ...(currentGameState.playerStates ?? {}),
+    }
+    const previousLives =
+      playerStates[senderParticipantIdentity]?.lives
+      ?? currentGameState.initialLives
+      ?? initialLives
+    const currentLives = Math.max(0, previousLives - 1)
+    const eliminated = currentLives === 0
+    playerStates[senderParticipantIdentity] = {
+      lives: currentLives,
+      eliminated,
+    }
+    const penalizedParticipantIdentities = [
+      ...(currentGameState.penalizedParticipantIdentitiesForCurrentAttack ?? []),
+      senderParticipantIdentity,
+    ]
+    const activeDefenderIdentities = getActiveDefenderIdentitiesForAttack({
+      defenderIdentities: currentGameState.defenderIdentities,
+      playerStates: currentGameState.playerStates,
+    })
+    const hitDefenderIdentitySet = new Set(penalizedParticipantIdentities)
+    const allDefendersHit =
+      activeDefenderIdentities.length > 0
+      && activeDefenderIdentities.every((participantIdentity) => (
+        hitDefenderIdentitySet.has(participantIdentity)
+      ))
+    const alivePlayerIdentitiesAfterDamage = getAlivePlayerIdentities({
+      activePlayerIdentities: currentGameState.activePlayerIdentities,
+      playerStates,
+    })
+    const matchEnded =
+      allDefendersHit
+      && alivePlayerIdentitiesAfterDamage.length <= 1
+
+    if (allDefendersHit && attackCompletionTimerRef.current !== null) {
+      window.clearTimeout(attackCompletionTimerRef.current)
+      attackCompletionTimerRef.current = null
+    }
+
+    const nextSnapshot = createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: currentGameState.revision,
+      hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+      readyParticipantIdentities: matchEnded
+        ? []
+        : activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
+      phase: matchEnded
+        ? 'post-game'
+        : allDefendersHit
+          ? 'attack-ended'
+          : 'attack-active',
+      countdownStartedAt: currentGameState.countdownStartedAt,
+      countdownDurationMs: currentGameState.countdownDurationMs,
+      roundNumber: currentGameState.roundNumber,
+      activePlayerIdentities: matchEnded
+        ? alivePlayerIdentitiesAfterDamage
+        : currentGameState.activePlayerIdentities,
+      turnOrder: currentGameState.turnOrder,
+      currentTurnIndex: currentGameState.currentTurnIndex,
+      attackerIdentity: currentGameState.attackerIdentity,
+      defenderIdentities: currentGameState.defenderIdentities,
+      roleRevealStartedAt: currentGameState.roleRevealStartedAt,
+      roleRevealDurationMs: currentGameState.roleRevealDurationMs,
+      attackStartedAt: currentGameState.attackStartedAt,
+      attackDurationMs: currentGameState.attackDurationMs,
+      attackEndsAt: currentGameState.attackEndsAt,
+      attackEndReason: allDefendersHit ? 'all-defenders-hit' : undefined,
+      attackSequence: currentGameState.attackSequence,
+      attackContent: currentGameState.attackContent,
+      playerStates,
+      penalizedParticipantIdentitiesForCurrentAttack:
+        penalizedParticipantIdentities,
+      roundResult: currentGameState.roundResult,
+      fairPlay: {
+        ...currentGameState.fairPlay,
+        check: matchEnded
+          ? createFairPlayCheckState({
+              activePlayerIdentities: alivePlayerIdentitiesAfterDamage,
+              participantNamesByIdentity,
+              previous: currentGameState.fairPlay?.check,
+            })
+          : currentGameState.fairPlay?.check,
+        lastEvent: {
+          eventId: event.eventId,
+          participantIdentity: senderParticipantIdentity,
+          reason: event.reason,
+          roundNumber: event.roundNumber,
+          attackSequence: event.attackSequence,
+          previousLives,
+          currentLives,
+          eliminated,
+          detectedAt: event.detectedAt,
+        },
+      },
+    })
+    const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+    const timer = window.setTimeout(() => {
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      if (matchEnded) {
+        setReadyParticipantIdentities([])
+      }
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      logGameDamageDebug('damage applied', {
+        attackId,
+        defenderIdentity: senderParticipantIdentity,
+        damageApplied: true,
+        remainingLife: currentLives,
+        allDefendersHit,
+        matchEnded,
+      })
+      void publishGameStateSnapshot(nextSnapshot)
+    }, 0)
+
+    return () => window.clearTimeout(timer)
   }, [
     activeReadyParticipantIdentities,
     displayedParticipants,
     isCurrentUserHost,
+    initialLives,
     meetingId,
+    participantNamesByIdentity,
     participantCount,
     publishGameStateSnapshot,
     roomCode,
+  ])
+
+  const handleLocalFairPlayEvent = useCallback((event: Omit<
+    GameFairPlayEventRequest,
+    'type' | 'meetingId' | 'roomCode' | 'roundNumber' | 'attackSequence'
+  >) => {
+    const currentGameState = gameStateRef.current
+    const attackId = [
+      currentGameState.roundNumber ?? 'round',
+      currentGameState.attackSequence ?? 'attack',
+      currentGameState.attackerIdentity ?? 'attacker',
+      localParticipantIdentity ?? 'defender',
+    ].join(':')
+
+    if (
+      !localParticipantIdentity
+      || currentGameState.phase !== 'attack-active'
+      || currentGameState.attackerIdentity === localParticipantIdentity
+      || !currentGameState.defenderIdentities?.includes(localParticipantIdentity)
+      || currentGameState.playerStates?.[localParticipantIdentity]?.eliminated
+      || currentGameState.penalizedParticipantIdentitiesForCurrentAttack
+        ?.includes(localParticipantIdentity)
+      || typeof currentGameState.roundNumber !== 'number'
+      || localFairPlayAttackReportRef.current.has(attackId)
+      || localFairPlayEventReportedRef.current.has(event.eventId)
+    ) {
+      return
+    }
+
+    localFairPlayEventReportedRef.current.add(event.eventId)
+    localFairPlayAttackReportRef.current.add(attackId)
+
+    if (isCurrentUserHost) {
+      applyFairPlayEventFromHost(localParticipantIdentity, {
+        eventId: event.eventId,
+        reason: event.reason,
+        roundNumber: currentGameState.roundNumber,
+        attackSequence: currentGameState.attackSequence,
+        detectedAt: event.detectedAt,
+      })
+      return
+    }
+
+    const controller = liveKitDataControllerRef.current
+    if (!controller || !isLiveKitConnected || !isLiveKitDataReady) {
+      return
+    }
+
+    void controller.publishGameMessage({
+      type: 'fair-play-event-request',
+      payload: {
+        type: 'fair-play-event-request',
+        meetingId,
+        roomCode,
+        eventId: event.eventId,
+        reason: event.reason,
+        roundNumber: currentGameState.roundNumber,
+        attackSequence: currentGameState.attackSequence,
+        detectorVersion: event.detectorVersion,
+        scoreSummary: event.scoreSummary,
+        detectedAt: event.detectedAt,
+      },
+    })
+  }, [
+    applyFairPlayEventFromHost,
+    isCurrentUserHost,
+    isLiveKitConnected,
+    isLiveKitDataReady,
+    localParticipantIdentity,
+    meetingId,
+    roomCode,
+  ])
+
+  const handleAudioLaughEvent = useCallback((event: AudioLaughEvent) => {
+    const currentGameState = gameStateRef.current
+    const visualDebug = fairPlayDebugRef.current
+    const visualWarning = fairPlayWarningRef.current
+    const currentLocalParticipantIdentity = localParticipantIdentityRef.current
+
+    if (
+      !currentLocalParticipantIdentity
+      || currentGameState.phase !== 'attack-active'
+      || currentGameState.penalizedParticipantIdentitiesForCurrentAttack
+        ?.includes(currentLocalParticipantIdentity)
+    ) {
+      return
+    }
+
+    const visualSignalScore =
+      ((visualDebug?.smileScore ?? 0) * 0.72)
+      + ((visualDebug?.cheekScore ?? 0) * 0.28)
+    const hasVisualLaughSignal =
+      visualDebug?.laughState === 'candidate'
+      || visualSignalScore >= 0.42
+    const isMouthOccluded =
+      visualWarning.reason === 'mouth-occluded'
+      || visualDebug?.mouthOccluded === true
+    const isFaceHidden =
+      visualWarning.reason === 'face-not-visible'
+      || visualDebug?.faceVisible === false
+    const isFaceVisible = visualDebug?.faceVisible === true
+    const reason =
+      isMouthOccluded && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
+        ? 'occluded-audio-laugh'
+        : isFaceHidden && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
+          ? 'hidden-audio-laugh'
+          : hasVisualLaughSignal && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
+            ? 'multimodal-laugh'
+            : isFaceVisible && event.audioLaughScore >= AUDIO_LAUGH_VERY_HIGH_THRESHOLD
+              ? 'audio-laugh'
+              : null
+
+    if (!reason) {
+      return
+    }
+
+    handleLocalFairPlayEvent({
+      eventId: event.eventId,
+      reason,
+      detectorVersion: 'fusion-audio-visual-mvp-1',
+      scoreSummary: {
+        smileScore: visualDebug?.smileScore,
+        cheekScore: visualDebug?.cheekScore,
+        audioLaughScore: event.audioLaughScore,
+        audioTopCategoryName: event.topCategoryName,
+        audioTopCategoryScore: event.topCategoryScore,
+      },
+      detectedAt: event.detectedAt,
+    })
+  }, [
+    handleLocalFairPlayEvent,
   ])
 
   const startAttackFromHost = useCallback((requesterIdentity: string) => {
@@ -2182,6 +3951,7 @@ export function MeetingRoomPage({
       previousRevision: currentGameState.revision,
       hostParticipantIdentity: currentGameState.hostParticipantIdentity,
       readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
       phase: 'attack-active',
       countdownStartedAt: currentGameState.countdownStartedAt,
       countdownDurationMs: currentGameState.countdownDurationMs,
@@ -2198,17 +3968,25 @@ export function MeetingRoomPage({
       attackEndsAt: attackEndsAt.toISOString(),
       attackSequence: currentAttackSequence + 1,
       attackContent: currentGameState.attackContent,
+      playerStates: currentGameState.playerStates,
+      penalizedParticipantIdentitiesForCurrentAttack: [],
+      roundResult: null,
     })
     const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
-    gameStateSnapshotKeyRef.current = snapshotKey
-    gameStateRef.current = nextSnapshot
-    setGameState(nextSnapshot)
-    publishedGameStateSnapshotRef.current = snapshotKey
-    void publishGameStateSnapshot(nextSnapshot)
+    const timer = window.setTimeout(() => {
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+    }, 0)
+
+    return () => window.clearTimeout(timer)
   }, [
     activeReadyParticipantIdentities,
     displayedParticipants,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2286,6 +4064,7 @@ export function MeetingRoomPage({
         previousRevision: latestGameState.revision,
         hostParticipantIdentity: latestGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+        initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'attack-ready',
         countdownStartedAt: latestGameState.countdownStartedAt,
         countdownDurationMs: latestGameState.countdownDurationMs,
@@ -2299,6 +4078,8 @@ export function MeetingRoomPage({
         roleRevealDurationMs: latestGameState.roleRevealDurationMs,
         attackSequence: latestGameState.attackSequence,
         attackContent: nextAttackContent,
+        playerStates: latestGameState.playerStates,
+        roundResult: null,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2313,6 +4094,7 @@ export function MeetingRoomPage({
   }, [
     activeReadyParticipantIdentities,
     displayedParticipants,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2443,6 +4225,185 @@ export function MeetingRoomPage({
     startAttackFromHost,
   ])
 
+  const handleStartNextRound = useCallback(() => {
+    const currentGameState = gameStateRef.current
+
+    if (
+      !isCurrentUserHost
+      || !(
+        currentGameState.phase === 'round-ended'
+        || (
+          currentGameState.phase === 'round-result'
+          && currentGameState.roundResult
+        )
+      )
+    ) {
+      return
+    }
+
+    const alivePlayerIdentities = getAlivePlayerIdentities({
+      activePlayerIdentities: currentGameState.activePlayerIdentities,
+      playerStates: currentGameState.playerStates,
+    })
+
+    if (alivePlayerIdentities.length <= 1) {
+      const winnerIdentity = alivePlayerIdentities[0]
+      const postGameFairPlay = createFairPlayCheckState({
+        activePlayerIdentities: alivePlayerIdentities,
+        participantNamesByIdentity,
+        previous: currentGameState.fairPlay?.check,
+      })
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: currentGameState.revision,
+        hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+        initialLives: currentGameState.initialLives ?? initialLives,
+        phase: 'post-game',
+        roundNumber: currentGameState.roundNumber,
+        activePlayerIdentities: alivePlayerIdentities,
+        turnOrder: currentGameState.turnOrder,
+        currentTurnIndex: currentGameState.currentTurnIndex,
+        attackerIdentity: currentGameState.attackerIdentity,
+        defenderIdentities: [],
+        attackSequence: currentGameState.attackSequence,
+        playerStates: currentGameState.playerStates,
+        roundResult: currentGameState.roundResult,
+        attackContent: null,
+        fairPlay: {
+          ...currentGameState.fairPlay,
+          check: postGameFairPlay,
+        },
+      })
+      const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+      logPostGameDebug('game over entered', {
+        winnerIdentity,
+        revision: nextSnapshot.revision,
+      })
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+      return
+    }
+
+    const nextAttacker =
+      currentGameState.phase === 'round-ended'
+        ? {
+            turnOrder: (currentGameState.turnOrder ?? alivePlayerIdentities)
+              .filter((participantIdentity) => (
+                alivePlayerIdentities.includes(participantIdentity)
+              )),
+            currentTurnIndex: Math.max(
+              0,
+              (currentGameState.turnOrder ?? alivePlayerIdentities).findIndex(
+                (participantIdentity) => (
+                  participantIdentity === currentGameState.attackerIdentity
+                ),
+              ),
+            ),
+            attackerIdentity: currentGameState.attackerIdentity,
+          }
+        : getNextAttackerIdentity({
+            turnOrder: currentGameState.turnOrder,
+            activePlayerIdentities: alivePlayerIdentities,
+            currentAttackerIdentity: currentGameState.attackerIdentity,
+            playerStates: currentGameState.playerStates,
+          })
+
+    if (!nextAttacker.attackerIdentity) {
+      return
+    }
+
+    const nextRoundNumber =
+      currentGameState.phase === 'round-ended'
+        ? currentGameState.roundNumber
+        : (currentGameState.roundNumber ?? 1) + 1
+    const nextSnapshot = createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: currentGameState.revision,
+      hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+      readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
+      phase: 'attack-ready',
+      countdownStartedAt: currentGameState.countdownStartedAt,
+      countdownDurationMs: currentGameState.countdownDurationMs,
+      roundNumber: nextRoundNumber,
+      activePlayerIdentities: alivePlayerIdentities,
+      turnOrder: nextAttacker.turnOrder,
+      currentTurnIndex: nextAttacker.currentTurnIndex,
+      attackerIdentity: nextAttacker.attackerIdentity,
+      defenderIdentities: getDefenderIdentities(
+        alivePlayerIdentities,
+        nextAttacker.attackerIdentity,
+      ),
+      attackSequence: currentGameState.attackSequence,
+      playerStates: currentGameState.playerStates,
+      roundResult: null,
+      attackContent: null,
+      fairPlay: currentGameState.fairPlay,
+    })
+    const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+    gameStateSnapshotKeyRef.current = snapshotKey
+    gameStateRef.current = nextSnapshot
+    setGameState(nextSnapshot)
+    publishedGameStateSnapshotRef.current = snapshotKey
+    void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    isCurrentUserHost,
+    initialLives,
+    meetingId,
+    participantNamesByIdentity,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+  ])
+
+  useEffect(() => {
+    if (
+      !isCurrentUserHost
+      || gameState.phase !== 'round-ended'
+      || wasRemovedFromMeeting
+    ) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const currentGameState = gameStateRef.current
+
+      if (
+        currentGameState.phase !== 'round-ended'
+        || currentGameState.roundNumber !== gameState.roundNumber
+        || currentGameState.attackSequence !== gameState.attackSequence
+      ) {
+        return
+      }
+
+      handleStartNextRound()
+    }, GAME_TURN_HANDOFF_DURATION_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    gameState.attackSequence,
+    gameState.initialLives,
+    gameState.phase,
+    gameState.roundNumber,
+    handleStartNextRound,
+    isCurrentUserHost,
+    wasRemovedFromMeeting,
+  ])
+
   useEffect(() => {
     if (!isCurrentUserHost || wasRemovedFromMeeting) {
       return
@@ -2465,6 +4426,22 @@ export function MeetingRoomPage({
       return
     }
 
+    if (isPreGameFairPlayPhase(nextSnapshot.phase)) {
+      logNextMatchDebug('bootstrap snapshot publish', {
+        phase: nextSnapshot.phase,
+        host: nextSnapshot.hostParticipantIdentity,
+        roster: nextSnapshot.participants
+          .map((participant) => participant.participantIdentity)
+          .filter(Boolean),
+        fairPlayRequired:
+          nextSnapshot.fairPlay?.check?.activePlayerIdentities ?? [],
+        ready: nextSnapshot.participants
+          .filter((participant) => participant.isReady)
+          .map((participant) => participant.participantIdentity)
+          .filter(Boolean),
+      })
+    }
+
     publishedGameStateSnapshotRef.current = snapshotKey
     void publishGameStateSnapshot(nextSnapshot)
   }, [
@@ -2474,6 +4451,284 @@ export function MeetingRoomPage({
     isLiveKitDataReady,
     publishGameStateSnapshot,
     activeReadyParticipantIdentities,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (!isCurrentUserHost || wasRemovedFromMeeting) {
+      return
+    }
+
+    const currentGameState = gameStateRef.current
+    const isRoomFull =
+      currentGameState.participantCount >= 2
+      && currentGameState.connectedParticipantCount
+        >= currentGameState.participantCount
+
+    if (currentGameState.phase === 'auto-start-pending') {
+      if (gameAutoStartTimerRef.current !== null) {
+        window.clearTimeout(gameAutoStartTimerRef.current)
+        gameAutoStartTimerRef.current = null
+      }
+
+      const nextReadyIdentities = filterReadyParticipantIdentities(
+        displayedParticipants.slice(0, participantCount),
+        activeReadyParticipantIdentities,
+      )
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: currentGameState.revision,
+        hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+        readyParticipantIdentities: nextReadyIdentities,
+        phase: isRoomFull ? undefined : 'waiting',
+        roundResult: null,
+        fairPlay: currentGameState.fairPlay,
+      })
+      const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+      const timer = window.setTimeout(() => {
+        gameStateSnapshotKeyRef.current = snapshotKey
+        gameStateRef.current = nextSnapshot
+        setReadyParticipantIdentities(nextReadyIdentities)
+        setGameState(nextSnapshot)
+        publishedGameStateSnapshotRef.current = snapshotKey
+        void publishGameStateSnapshot(nextSnapshot)
+      }, 0)
+
+      return () => window.clearTimeout(timer)
+    }
+  }, [
+    activeReadyParticipantIdentities,
+    displayedParticipants,
+    gameState.connectedParticipantCount,
+    gameState.participantCount,
+    gameState.phase,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (gameState.phase === 'waiting' || gameState.phase === 'ready') {
+      matchStartInFlightRef.current = false
+    }
+  }, [gameState.phase])
+
+  useEffect(() => {
+    cancelGameAutoStartTimers(`phase-${gameState.phase}`)
+    const resetTimer = window.setTimeout(() => {
+      if (gameState.phase !== 'ready') {
+        setAutoStartRemainingSeconds(null)
+      }
+    }, 0)
+
+    return () => window.clearTimeout(resetTimer)
+  }, [cancelGameAutoStartTimers, gameState.phase])
+
+  useEffect(() => {
+    if (
+      !isCurrentUserHost
+      || wasRemovedFromMeeting
+      || gameState.phase !== 'ready'
+    ) {
+      return
+    }
+
+    if (!canStartGame) {
+      if (!gameState.autoStartAt) {
+        return
+      }
+
+      const currentGameState = gameStateRef.current
+      const nextSnapshot = createGameStateSnapshot({
+        meetingId,
+        roomCode,
+        participantCount,
+        participants: displayedParticipants,
+        previousRevision: currentGameState.revision,
+        hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+        readyParticipantIdentities: activeReadyParticipantIdentities,
+        initialLives: currentGameState.initialLives ?? initialLives,
+        phase: currentGameState.phase,
+        autoStartAt: undefined,
+        fairPlay: currentGameState.fairPlay,
+      })
+      const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+      gameStateSnapshotKeyRef.current = snapshotKey
+      gameStateRef.current = nextSnapshot
+      setGameState(nextSnapshot)
+      publishedGameStateSnapshotRef.current = snapshotKey
+      void publishGameStateSnapshot(nextSnapshot)
+      return
+    }
+
+    if (gameState.autoStartAt) {
+      logAutoStartDebug('existing schedule preserved', {
+        autoStartAt: gameState.autoStartAt,
+        revision: gameState.revision,
+      })
+      return
+    }
+
+    const autoStartAt = new Date(Date.now() + GAME_AUTO_START_DELAY_MS)
+      .toISOString()
+    const currentGameState = gameStateRef.current
+    const nextSnapshot = createGameStateSnapshot({
+      meetingId,
+      roomCode,
+      participantCount,
+      participants: displayedParticipants,
+      previousRevision: currentGameState.revision,
+      hostParticipantIdentity: currentGameState.hostParticipantIdentity,
+      readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
+      phase: 'ready',
+      autoStartAt,
+      roundResult: null,
+      fairPlay: currentGameState.fairPlay,
+    })
+    const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
+
+    gameStateSnapshotKeyRef.current = snapshotKey
+    gameStateRef.current = nextSnapshot
+    setGameState(nextSnapshot)
+    publishedGameStateSnapshotRef.current = snapshotKey
+    logAutoStartDebug('all-ready entered', {
+      revision: currentGameState.revision,
+    })
+    logAutoStartDebug('scheduled', {
+      sequenceId: nextSnapshot.revision,
+      autoStartAt,
+    })
+    void publishGameStateSnapshot(nextSnapshot)
+  }, [
+    activeReadyParticipantIdentities,
+    canStartGame,
+    displayedParticipants,
+    gameState.autoStartAt,
+    gameState.phase,
+    gameState.revision,
+    initialLives,
+    isCurrentUserHost,
+    meetingId,
+    participantCount,
+    publishGameStateSnapshot,
+    roomCode,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (gameAutoStartIntervalRef.current !== null) {
+      window.clearInterval(gameAutoStartIntervalRef.current)
+      gameAutoStartIntervalRef.current = null
+    }
+
+    if (gameState.phase !== 'ready' || !gameState.autoStartAt) {
+      const resetTimer = window.setTimeout(() => {
+        setAutoStartRemainingSeconds(null)
+      }, 0)
+
+      return () => window.clearTimeout(resetTimer)
+    }
+
+    const autoStartAtMs = Date.parse(gameState.autoStartAt)
+
+    if (!Number.isFinite(autoStartAtMs)) {
+      return
+    }
+
+    const updateRemaining = () => {
+      const remainingMs = Math.max(
+        0,
+        autoStartAtMs - Date.now(),
+      )
+      const remainingSeconds = Math.ceil(remainingMs / 1000)
+
+      setAutoStartRemainingSeconds(remainingSeconds)
+
+      if (
+        remainingSeconds > 0
+        && remainingSeconds !== lastAutoStartLogRemainingRef.current
+      ) {
+        lastAutoStartLogRemainingRef.current = remainingSeconds
+        logAutoStartDebug('tick', { remaining: remainingSeconds })
+      }
+    }
+
+    const firstTickTimer = window.setTimeout(updateRemaining, 0)
+    gameAutoStartIntervalRef.current = window.setInterval(updateRemaining, 250)
+
+    return () => {
+      window.clearTimeout(firstTickTimer)
+      if (gameAutoStartIntervalRef.current !== null) {
+        window.clearInterval(gameAutoStartIntervalRef.current)
+        gameAutoStartIntervalRef.current = null
+      }
+    }
+  }, [
+    gameState.autoStartAt,
+    gameState.phase,
+  ])
+
+  useEffect(() => {
+    if (gameAutoStartTimerRef.current !== null) {
+      window.clearTimeout(gameAutoStartTimerRef.current)
+      gameAutoStartTimerRef.current = null
+    }
+
+    if (
+      !isCurrentUserHost
+      || wasRemovedFromMeeting
+      || gameState.phase !== 'ready'
+      || !gameState.autoStartAt
+    ) {
+      return
+    }
+
+    const autoStartAtMs = Date.parse(gameState.autoStartAt)
+
+    if (!Number.isFinite(autoStartAtMs)) {
+      return
+    }
+
+    const delayMs = Math.max(0, autoStartAtMs - Date.now())
+
+    gameAutoStartTimerRef.current = window.setTimeout(() => {
+      const currentGameState = gameStateRef.current
+
+      if (
+        currentGameState.phase !== 'ready'
+        || currentGameState.autoStartAt !== gameState.autoStartAt
+      ) {
+        return
+      }
+
+      logAutoStartDebug('triggered', {
+        autoStartAt: currentGameState.autoStartAt,
+        revision: currentGameState.revision,
+      })
+      setAutoStartRemainingSeconds(null)
+      handleStartGame('auto')
+    }, delayMs)
+
+    return () => {
+      if (gameAutoStartTimerRef.current !== null) {
+        window.clearTimeout(gameAutoStartTimerRef.current)
+        gameAutoStartTimerRef.current = null
+      }
+    }
+  }, [
+    gameState.autoStartAt,
+    gameState.phase,
+    handleStartGame,
+    isCurrentUserHost,
     wasRemovedFromMeeting,
   ])
 
@@ -2520,9 +4775,17 @@ export function MeetingRoomPage({
         previousRevision: currentGameState.revision,
         hostParticipantIdentity: currentGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'game-started',
         countdownStartedAt: currentGameState.countdownStartedAt,
         countdownDurationMs: currentGameState.countdownDurationMs,
+        roundNumber: currentGameState.roundNumber,
+        activePlayerIdentities: currentGameState.activePlayerIdentities,
+        turnOrder: currentGameState.turnOrder,
+        currentTurnIndex: currentGameState.currentTurnIndex,
+        playerStates: currentGameState.playerStates,
+        roundResult: currentGameState.roundResult,
+        fairPlay: currentGameState.fairPlay,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2531,6 +4794,10 @@ export function MeetingRoomPage({
       gameStateRef.current = nextSnapshot
       setGameState(nextSnapshot)
       publishedGameStateSnapshotRef.current = snapshotKey
+      logMatchStartDebug('match started', {
+        countdownStartedAt: currentGameState.countdownStartedAt,
+        revision: nextSnapshot.revision,
+      })
       void publishGameStateSnapshot(nextSnapshot)
     }, delayMs)
 
@@ -2546,6 +4813,7 @@ export function MeetingRoomPage({
     gameState.countdownDurationMs,
     gameState.countdownStartedAt,
     gameState.phase,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2578,6 +4846,7 @@ export function MeetingRoomPage({
         previousRevision: gameStateRef.current.revision,
         hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+        initialLives: gameState.initialLives ?? initialLives,
         phase: 'waiting',
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
@@ -2600,6 +4869,7 @@ export function MeetingRoomPage({
       previousRevision: gameStateRef.current.revision,
       hostParticipantIdentity: gameStateRef.current.hostParticipantIdentity,
       readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: gameState.initialLives ?? initialLives,
       phase: 'role-reveal',
       countdownStartedAt: gameStateRef.current.countdownStartedAt,
       countdownDurationMs: gameStateRef.current.countdownDurationMs,
@@ -2611,6 +4881,13 @@ export function MeetingRoomPage({
       defenderIdentities: getDefenderIdentities(activePlayerIdentities, attackerIdentity),
       roleRevealStartedAt: new Date().toISOString(),
       roleRevealDurationMs: GAME_ROLE_REVEAL_DURATION_MS,
+      playerStates:
+        gameState.playerStates ?? createInitialPlayerStates(
+          activePlayerIdentities,
+          gameState.initialLives ?? initialLives,
+        ),
+      roundResult: null,
+      fairPlay: gameState.fairPlay,
     })
     const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2623,7 +4900,13 @@ export function MeetingRoomPage({
     activeReadyParticipantIdentities,
     displayedParticipants,
     gameState.attackerIdentity,
+    gameState.activePlayerIdentities,
+    gameState.fairPlay,
+    gameState.initialLives,
+    gameState.playerStates,
+    gameState.turnOrder,
     gameState.phase,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2676,6 +4959,7 @@ export function MeetingRoomPage({
         previousRevision: currentGameState.revision,
         hostParticipantIdentity: currentGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'attack-ready',
         countdownStartedAt: currentGameState.countdownStartedAt,
         countdownDurationMs: currentGameState.countdownDurationMs,
@@ -2688,6 +4972,8 @@ export function MeetingRoomPage({
         roleRevealStartedAt: currentGameState.roleRevealStartedAt,
         roleRevealDurationMs: currentGameState.roleRevealDurationMs,
         attackContent: null,
+        playerStates: currentGameState.playerStates,
+        roundResult: null,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2711,6 +4997,7 @@ export function MeetingRoomPage({
     gameState.phase,
     gameState.roleRevealDurationMs,
     gameState.roleRevealStartedAt,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2761,6 +5048,7 @@ export function MeetingRoomPage({
         previousRevision: currentGameState.revision,
         hostParticipantIdentity: currentGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'attack-ended',
         countdownStartedAt: currentGameState.countdownStartedAt,
         countdownDurationMs: currentGameState.countdownDurationMs,
@@ -2775,8 +5063,13 @@ export function MeetingRoomPage({
         attackStartedAt: currentGameState.attackStartedAt,
         attackDurationMs: currentGameState.attackDurationMs,
         attackEndsAt: currentGameState.attackEndsAt,
+        attackEndReason: 'timeout',
         attackSequence: currentGameState.attackSequence,
         attackContent: currentGameState.attackContent,
+        playerStates: currentGameState.playerStates,
+        penalizedParticipantIdentitiesForCurrentAttack:
+          currentGameState.penalizedParticipantIdentitiesForCurrentAttack,
+        roundResult: null,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2797,9 +5090,11 @@ export function MeetingRoomPage({
   }, [
     activeReadyParticipantIdentities,
     displayedParticipants,
-    gameState.attackEndsAt,
     gameState.attackSequence,
+    gameState.attackEndsAt,
+    gameState.initialLives,
     gameState.phase,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
@@ -2838,12 +5133,16 @@ export function MeetingRoomPage({
           .slice(0, participantCount)
           .map(getParticipantGameIdentity),
       )
-      const activePlayerIdentities = (currentGameState.activePlayerIdentities ?? [])
+      const activePlayerIdentities = getAlivePlayerIdentities({
+        activePlayerIdentities: (currentGameState.activePlayerIdentities ?? [])
         .filter((participantIdentity) => (
           visibleParticipantIdentities.has(participantIdentity)
-        ))
+        )),
+        playerStates: currentGameState.playerStates,
+      })
 
       if (activePlayerIdentities.length < 2) {
+        const winnerIdentity = activePlayerIdentities[0]
         const nextSnapshot = createGameStateSnapshot({
           meetingId,
           roomCode,
@@ -2851,40 +5150,48 @@ export function MeetingRoomPage({
           participants: displayedParticipants,
           previousRevision: currentGameState.revision,
           hostParticipantIdentity: currentGameState.hostParticipantIdentity,
-          readyParticipantIdentities: activeReadyParticipantIdentities,
-          phase: 'waiting',
+          readyParticipantIdentities: winnerIdentity
+            ? []
+            : activeReadyParticipantIdentities,
+          initialLives: currentGameState.initialLives ?? initialLives,
+          phase: winnerIdentity ? 'post-game' : 'waiting',
+          roundNumber: currentGameState.roundNumber,
+          activePlayerIdentities,
+          turnOrder: currentGameState.turnOrder,
+          currentTurnIndex: currentGameState.currentTurnIndex,
+          attackerIdentity: currentGameState.attackerIdentity,
+          defenderIdentities: [],
+          playerStates: currentGameState.playerStates,
+          penalizedParticipantIdentitiesForCurrentAttack: [],
+          roundResult: currentGameState.roundResult,
         })
         const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
+        if (winnerIdentity) {
+          logPostGameDebug('game over entered', {
+            winnerIdentity,
+            revision: nextSnapshot.revision,
+          })
+        }
         roundTransitionTimerRef.current = null
         gameStateSnapshotKeyRef.current = snapshotKey
         gameStateRef.current = nextSnapshot
+        if (winnerIdentity) {
+          setReadyParticipantIdentities([])
+        }
         setGameState(nextSnapshot)
         publishedGameStateSnapshotRef.current = snapshotKey
         void publishGameStateSnapshot(nextSnapshot)
         return
       }
 
-      let turnOrder = (currentGameState.turnOrder ?? activePlayerIdentities)
-        .filter((participantIdentity) => (
-          activePlayerIdentities.includes(participantIdentity)
-        ))
-
-      activePlayerIdentities.forEach((participantIdentity) => {
-        if (!turnOrder.includes(participantIdentity)) {
-          turnOrder = [...turnOrder, participantIdentity]
-        }
+      const nextAttacker = getNextAttackerIdentity({
+        turnOrder: currentGameState.turnOrder,
+        activePlayerIdentities,
+        currentAttackerIdentity: currentGameState.attackerIdentity,
+        playerStates: currentGameState.playerStates,
       })
 
-      const currentAttackerIndex = Math.max(
-        0,
-        turnOrder.findIndex((participantIdentity) => (
-          participantIdentity === currentGameState.attackerIdentity
-        )),
-      )
-      const nextTurnIndex = (currentAttackerIndex + 1) % turnOrder.length
-      const nextAttackerIdentity = turnOrder[nextTurnIndex]
-      const nextRoundNumber = (currentGameState.roundNumber ?? 1) + 1
       const nextSnapshot = createGameStateSnapshot({
         meetingId,
         roomCode,
@@ -2893,20 +5200,25 @@ export function MeetingRoomPage({
         previousRevision: currentGameState.revision,
         hostParticipantIdentity: currentGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
+      initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'round-ended',
         countdownStartedAt: currentGameState.countdownStartedAt,
         countdownDurationMs: currentGameState.countdownDurationMs,
-        roundNumber: nextRoundNumber,
+        roundNumber: (currentGameState.roundNumber ?? 1) + 1,
         activePlayerIdentities,
-        turnOrder,
-        currentTurnIndex: nextTurnIndex,
-        attackerIdentity: nextAttackerIdentity,
+        turnOrder: nextAttacker.turnOrder,
+        currentTurnIndex: nextAttacker.currentTurnIndex,
+        attackerIdentity: nextAttacker.attackerIdentity,
         defenderIdentities: getDefenderIdentities(
           activePlayerIdentities,
-          nextAttackerIdentity,
+          nextAttacker.attackerIdentity,
         ),
         attackSequence: currentGameState.attackSequence,
         attackContent: null,
+        playerStates: currentGameState.playerStates,
+        penalizedParticipantIdentitiesForCurrentAttack: [],
+        roundResult: null,
+        fairPlay: currentGameState.fairPlay,
       })
       const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
 
@@ -2929,13 +5241,172 @@ export function MeetingRoomPage({
     activeReadyParticipantIdentities,
     displayedParticipants,
     gameState.attackSequence,
+    gameState.initialLives,
     gameState.phase,
     gameState.roundNumber,
+    initialLives,
     isCurrentUserHost,
     meetingId,
     participantCount,
     publishGameStateSnapshot,
     roomCode,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (postGameTransitionTimerRef.current !== null) {
+      window.clearTimeout(postGameTransitionTimerRef.current)
+      postGameTransitionTimerRef.current = null
+    }
+
+    if (gameState.phase === 'game-over' && !wasRemovedFromMeeting) {
+      logPostGameDebug('waiting for server authoritative post-game', {
+        postGameAt: gameState.postGameAt,
+        isCurrentUserHost,
+      })
+    }
+
+    return () => {
+      if (postGameTransitionTimerRef.current !== null) {
+        window.clearTimeout(postGameTransitionTimerRef.current)
+        postGameTransitionTimerRef.current = null
+      }
+    }
+  }, [
+    gameState.phase,
+    gameState.postGameAt,
+    isCurrentUserHost,
+    wasRemovedFromMeeting,
+  ])
+
+  useEffect(() => {
+    if (
+      !isCurrentUserHost
+      || !isLiveKitConnected
+      || !liveKitConnection
+      || wasRemovedFromMeeting
+    ) {
+      return
+    }
+
+    const currentHost = displayedParticipants.find(
+      (participant) => participant.meetingRole === 'host',
+    )
+
+    if (
+      !currentHost?.liveKitIdentity
+      || !roomHostControlToken
+    ) {
+      return
+    }
+
+    Object.entries(gameState.playerStates ?? {}).forEach(
+      ([participantIdentity, playerState]) => {
+        if (
+          !playerState.eliminated
+          || removedEliminatedParticipantIdentitiesRef.current.has(
+            participantIdentity,
+          )
+          || eliminatedParticipantRemovalTimersRef.current.has(
+            participantIdentity,
+          )
+        ) {
+          return
+        }
+
+        const targetParticipant = displayedParticipants.find(
+          (participant) => (
+            getParticipantGameIdentity(participant) === participantIdentity
+          ),
+        )
+
+        if (!targetParticipant?.liveKitIdentity) {
+          return
+        }
+
+        const timer = window.setTimeout(() => {
+          eliminatedParticipantRemovalTimersRef.current.delete(participantIdentity)
+          removedEliminatedParticipantIdentitiesRef.current.add(participantIdentity)
+
+          const removedByName = currentHost.name
+          const dataController = liveKitDataControllerRef.current
+
+          void dataController?.publishMeetingControlMessage({
+            type: 'participant-kicked',
+            payload: {
+              meetingId,
+              roomName: liveKitConnection.roomName,
+              targetParticipantIdentity: participantIdentity,
+              removedByParticipantIdentity: currentHost.liveKitIdentity ?? '',
+              removedByName,
+              reason: 'eliminated',
+              timestamp: new Date().toISOString(),
+            },
+          }).catch((error) => {
+            console.warn('[livekit] Failed to publish elimination removal notice', error)
+          })
+
+          void removeLiveKitParticipant({
+            roomName: liveKitConnection.roomName,
+            targetParticipantIdentity: participantIdentity,
+            requesterParticipantIdentity: currentHost.liveKitIdentity ?? '',
+            requesterMeetingRole: currentHost.meetingRole,
+            hostControlToken: roomHostControlToken,
+          }).then(async (response) => {
+            if (response.hostChanged) {
+              const hostChangedPayload = {
+                meetingId,
+                roomName: liveKitConnection.roomName,
+                ...response.hostChanged,
+              }
+
+              logHostTransferDebug('current host eliminated', {
+                removedParticipantIdentity: participantIdentity,
+              })
+              logHostTransferDebug('candidate selected', {
+                candidateIdentity: response.hostChanged.newHostParticipantIdentity,
+              })
+              applyHostChanged(hostChangedPayload)
+              await dataController?.publishMeetingControlMessage({
+                type: 'host-changed',
+                payload: hostChangedPayload,
+              }).catch((error) => {
+                console.warn('[livekit] Failed to publish host succession notice', error)
+              })
+            }
+
+            if (participantIdentity === localParticipantIdentityRef.current) {
+              markParticipantKicked('eliminated')
+            }
+
+            setLiveKitParticipants((current) => current.filter(
+              (participant) => participant.liveKitIdentity !== participantIdentity,
+            ))
+            logHostTransferDebug('old host removed', {
+              removedParticipantIdentity: participantIdentity,
+            })
+          }).catch((error) => {
+            removedEliminatedParticipantIdentitiesRef.current.delete(participantIdentity)
+            console.warn('[livekit] Failed to remove eliminated participant', error)
+          })
+        }, 2000)
+
+        eliminatedParticipantRemovalTimersRef.current.set(
+          participantIdentity,
+          timer,
+        )
+      },
+    )
+  }, [
+    applyHostChanged,
+    displayedParticipants,
+    gameState.playerStates,
+    isCurrentUserHost,
+    isLiveKitConnected,
+    liveKitConnection,
+    markParticipantKicked,
+    meetingId,
+    roomHostControlToken,
     wasRemovedFromMeeting,
   ])
 
@@ -2958,36 +5429,10 @@ export function MeetingRoomPage({
     publishGameStateRequest,
   ])
 
-  const openConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
-    setIsScreenShareExpanded(false)
-    const nextTab = tab
-    setConversationTab(nextTab)
-    setIsParticipantsOpen(false)
-    setIsSettingsOpen(false)
-    setIsConversationOpen(true)
-    if (nextTab === 'chat') {
-      setChatUnreadCount(0)
-    }
-  }, [])
-
-  const toggleConversationPanel = useCallback((tab: ConversationTab = 'chat') => {
-    openConversationPanel(tab)
-  }, [openConversationPanel])
-
   const toggleParticipantsPanel = useCallback(() => {
     setIsScreenShareExpanded(false)
     setIsSettingsOpen(false)
-    setIsParticipantsOpen((current) => {
-      const nextOpen = !current
-
-      if (!nextOpen) {
-        window.setTimeout(() => {
-          controlBarParticipantsButtonRef.current?.focus()
-        }, 0)
-      }
-
-      return nextOpen
-    })
+    setIsParticipantsOpen((current) => !current)
   }, [])
 
   const toggleSettingsPanel = useCallback(() => {
@@ -3092,6 +5537,381 @@ export function MeetingRoomPage({
     && liveKitStatus !== 'leaving'
     && liveKitStatus !== 'ended'
     && liveKitStatus !== 'kicked'
+  const fairPlayLocalStream = displayedLocalParticipant?.mediaStream ?? null
+  const isLocalFairPlayDamageLocked = Boolean(
+    localParticipantIdentity
+    && gameState.penalizedParticipantIdentitiesForCurrentAttack
+      ?.includes(localParticipantIdentity),
+  )
+  const fairPlayLocalAudioTrack =
+    fairPlayLocalStream?.getAudioTracks()[0] ?? null
+  const fairPlayLocalVideoTrack =
+    fairPlayLocalStream?.getVideoTracks()[0] ?? null
+  const isLocalFairPlayCameraReady = Boolean(
+    fairPlayLocalVideoTrack
+    && fairPlayLocalVideoTrack.enabled
+    && !fairPlayLocalVideoTrack.muted
+    && fairPlayLocalVideoTrack.readyState === 'live',
+  )
+  const shouldRunFairPlayCheck = false
+  const shouldRunAttackFairPlay =
+    gameState.phase === 'attack-active'
+    && localGameRole === 'defender'
+    && Boolean(localParticipantIdentity)
+    && !gameState.playerStates?.[localParticipantIdentity ?? '']?.eliminated
+    && !isLocalFairPlayDamageLocked
+  const shouldRunAudioFairPlay =
+    shouldRunAttackFairPlay
+    && Boolean(fairPlayLocalAudioTrack)
+  const localFairPlaySessionKey = ''
+
+  useEffect(() => {
+    const video = fairPlayVideoRef.current
+
+    if (!video) {
+      return
+    }
+
+    if (video.srcObject !== fairPlayLocalStream) {
+      video.srcObject = fairPlayLocalStream
+    }
+
+    if (fairPlayLocalStream) {
+      void video.play().catch(() => undefined)
+    }
+  }, [fairPlayLocalStream])
+
+  useEffect(() => {
+    fairPlayCheckStatusKeyRef.current = ''
+  }, [gameState.fairPlay?.check?.startedAt, gameState.phase])
+
+  useEffect(() => {
+    if (gameState.phase !== 'attack-active') {
+      return
+    }
+
+    localFairPlayAttackReportRef.current.clear()
+  }, [gameState.attackSequence, gameState.phase])
+
+  useEffect(() => {
+    if (!shouldRunFairPlayCheck) {
+      return
+    }
+
+    logFairPlayCheckDebug('local camera ready', {
+      participantIdentity: localParticipantIdentity,
+      cameraReady: isLocalFairPlayCameraReady,
+      hasStream: Boolean(fairPlayLocalStream),
+      hasVideoTrack: Boolean(fairPlayLocalVideoTrack),
+      trackEnabled: fairPlayLocalVideoTrack?.enabled,
+      trackMuted: fairPlayLocalVideoTrack?.muted,
+      trackReadyState: fairPlayLocalVideoTrack?.readyState,
+    })
+  }, [
+    fairPlayLocalStream,
+    fairPlayLocalVideoTrack,
+    isLocalFairPlayCameraReady,
+    localParticipantIdentity,
+    shouldRunFairPlayCheck,
+  ])
+
+  useEffect(() => {
+    const video = fairPlayVideoRef.current
+
+    if (!video || !fairPlayLocalStream) {
+      fairPlayDetectorRef.current?.stop()
+      fairPlayDetectorModeRef.current = 'idle'
+      if (import.meta.env.DEV && shouldRunFairPlayCheck) {
+        console.info('[fair-play-not-started]', {
+          reason: !video ? 'no-video-element' : 'no-local-stream',
+          participantIdentity: localParticipantIdentity,
+          sessionId: localFairPlaySessionKey,
+        })
+      }
+      if (shouldRunFairPlayCheck && localParticipantIdentity) {
+        publishFairPlayCheckStatus(createCameraRequiredFairPlayStatus({
+          meetingId,
+          roomCode,
+          participantIdentity: localParticipantIdentity,
+          participantName: displayedLocalParticipant?.name,
+        }))
+      }
+      const timer = window.setTimeout(() => {
+        fairPlayWarningRef.current = { active: false }
+        fairPlayDebugRef.current = null
+        setFairPlayWarning({ active: false })
+        setFairPlayDebug(null)
+      }, 0)
+
+      return () => window.clearTimeout(timer)
+    }
+
+    const isPreGameFaceCheckSession = false
+
+    if (
+      isPreGameFaceCheckSession
+      && localFairPlaySessionKey
+      && fairPlayDetectorSessionKeyRef.current !== localFairPlaySessionKey
+    ) {
+      void fairPlayDetectorRef.current?.close()
+      fairPlayDetectorRef.current = null
+      fairPlayDetectorModeRef.current = 'idle'
+      fairPlayCheckStatusKeyRef.current = ''
+      fairPlayDetectorSessionKeyRef.current = localFairPlaySessionKey
+      if (import.meta.env.DEV) {
+        console.info('[fair-play-session]', {
+          id: localFairPlaySessionKey,
+          participant: localParticipantIdentity,
+          required: true,
+        })
+      }
+    } else if (!isPreGameFaceCheckSession && !shouldRunAttackFairPlay) {
+      fairPlayDetectorSessionKeyRef.current = ''
+    }
+
+    if (!fairPlayDetectorRef.current) {
+      fairPlayDetectorRef.current = new FairPlayDetector(video, {
+        onFairPlayEvent: handleLocalFairPlayEvent,
+        onCheckState: (checkState) => {
+          const participantIdentity = localParticipantIdentityRef.current
+
+          if (!participantIdentity) {
+            return
+          }
+
+          publishFairPlayCheckStatusRef.current(mapFaceCheckUiStateToStatus({
+            checkState,
+            meetingId,
+            roomCode,
+            participantIdentity,
+            participantName: displayedLocalParticipant?.name,
+          }))
+        },
+        onCheckResult: (result) => {
+          const participantIdentity = localParticipantIdentityRef.current
+
+          if (!participantIdentity) {
+            return
+          }
+
+          if (import.meta.env.DEV) {
+            console.info('[fair-play-local]', {
+              identity: participantIdentity,
+              camera: true,
+              face: result.passed,
+              mouth: result.passed,
+              smile: result.passed,
+              passed: result.passed,
+            })
+          }
+
+          publishFairPlayCheckStatusRef.current({
+            ...createCameraRequiredFairPlayStatus({
+              meetingId,
+              roomCode,
+              participantIdentity,
+              participantName: displayedLocalParticipant?.name,
+            }),
+            cameraReady: true,
+            faceReady: result.passed,
+            mouthReady: result.passed,
+            smileReady: result.passed,
+            passed: result.passed,
+            failed: !result.passed,
+            step: result.passed ? 'passed' : 'smile',
+            message: result.passed
+              ? 'FAIR PLAY CHECK 통과'
+              : '웃음 테스트를 다시 진행해 주세요.',
+            checkVersion: result.checkVersion,
+            calibrationVersion: result.calibrationVersion,
+            updatedAt: new Date().toISOString(),
+          })
+        },
+        onWarning: (warning) => {
+          fairPlayWarningRef.current = warning
+          setFairPlayWarning(warning)
+        },
+        onDebug: (debug) => {
+          fairPlayDebugRef.current = debug
+          if (FAIR_PLAY_DEBUG_ENABLED) {
+            setFairPlayDebug(debug)
+          }
+        },
+      })
+      if (import.meta.env.DEV) {
+        console.info('[fair-play-detector]', {
+          instance: 'created',
+          closed: false,
+          sessionId: fairPlayDetectorSessionKeyRef.current,
+        })
+      }
+    } else {
+      fairPlayDetectorRef.current.setVideo(video)
+      if (import.meta.env.DEV) {
+        console.info('[fair-play-detector]', {
+          instance: 'reused',
+          closed: false,
+          sessionId: fairPlayDetectorSessionKeyRef.current,
+        })
+      }
+    }
+
+    const publishCameraRequiredStatus = () => {
+      if (!shouldRunFairPlayCheck || !localParticipantIdentity) {
+        return
+      }
+
+      publishFairPlayCheckStatus(createCameraRequiredFairPlayStatus({
+        meetingId,
+        roomCode,
+        participantIdentity: localParticipantIdentity,
+        participantName: displayedLocalParticipant?.name,
+      }))
+    }
+
+    if (shouldRunAttackFairPlay) {
+      if (fairPlayDetectorModeRef.current !== 'attack-detection') {
+        fairPlayDetectorRef.current.stop()
+        fairPlayDetectorModeRef.current = 'attack-detection'
+        void fairPlayDetectorRef.current.startAttackDetection().catch((error) => {
+          console.warn('[fair-play] Failed to start attack detector', error)
+          fairPlayDetectorModeRef.current = 'idle'
+        })
+      }
+      return
+    }
+
+    if (shouldRunFairPlayCheck) {
+      if (import.meta.env.DEV) {
+        console.info('[fair-play-video]', {
+          element: true,
+          srcObject: Boolean(video.srcObject),
+          trackState: fairPlayLocalVideoTrack?.readyState,
+          trackEnabled: fairPlayLocalVideoTrack?.enabled,
+          trackMuted: fairPlayLocalVideoTrack?.muted,
+          readyState: video.readyState,
+          sessionId: localFairPlaySessionKey,
+        })
+      }
+
+      if (!isLocalFairPlayCameraReady) {
+        fairPlayDetectorRef.current.stop()
+        fairPlayDetectorModeRef.current = 'idle'
+        if (import.meta.env.DEV) {
+          console.info('[fair-play-not-started]', {
+            reason: fairPlayLocalVideoTrack?.readyState === 'ended'
+              ? 'track-ended'
+              : 'camera-not-ready',
+            participantIdentity: localParticipantIdentity,
+            sessionId: localFairPlaySessionKey,
+          })
+        }
+        publishCameraRequiredStatus()
+        return
+      }
+
+      if (fairPlayDetectorModeRef.current !== 'face-check') {
+        fairPlayDetectorRef.current.stop()
+        fairPlayDetectorModeRef.current = 'face-check'
+        logFairPlayCheckDebug('detector started', {
+          participantIdentity: localParticipantIdentity,
+        })
+        void fairPlayDetectorRef.current.startFaceCheck().catch((error) => {
+          console.warn('[fair-play] Failed to start pre-game face check', error)
+          fairPlayDetectorModeRef.current = 'idle'
+        })
+      } else if (import.meta.env.DEV) {
+        console.info('[fair-play-not-started]', {
+          reason: 'already-running-current-session',
+          participantIdentity: localParticipantIdentity,
+          sessionId: localFairPlaySessionKey,
+        })
+      }
+      return
+    }
+
+    fairPlayDetectorRef.current.stop()
+    fairPlayDetectorModeRef.current = 'idle'
+    const timer = window.setTimeout(() => {
+      fairPlayWarningRef.current = { active: false }
+      fairPlayDebugRef.current = null
+      setFairPlayWarning({ active: false })
+      setFairPlayDebug(null)
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    displayedLocalParticipant?.name,
+    fairPlayLocalStream,
+    handleLocalFairPlayEvent,
+    isLocalFairPlayCameraReady,
+    localFairPlaySessionKey,
+    localParticipantIdentity,
+    meetingId,
+    publishFairPlayCheckStatus,
+    roomCode,
+    fairPlayLocalVideoTrack,
+    shouldRunAttackFairPlay,
+    shouldRunFairPlayCheck,
+  ])
+
+  useEffect(() => {
+    const audioTrack = fairPlayLocalAudioTrack
+    const audioTrackId = audioTrack?.id ?? ''
+
+    if (
+      !shouldRunAudioFairPlay
+      || !audioTrack
+      || audioTrack.readyState === 'ended'
+    ) {
+      audioLaughDetectorRef.current?.stop()
+      const timer = window.setTimeout(() => {
+        setAudioFairPlayDebug(null)
+        setAudioFairPlayUnavailableReason('')
+      }, 0)
+
+      return () => window.clearTimeout(timer)
+    }
+
+    if (
+      audioLaughDetectorRef.current
+      && audioLaughTrackIdRef.current !== audioTrackId
+    ) {
+      void audioLaughDetectorRef.current.close()
+      audioLaughDetectorRef.current = null
+      audioLaughTrackIdRef.current = ''
+    }
+
+    if (!audioLaughDetectorRef.current) {
+      audioLaughTrackIdRef.current = audioTrackId
+      audioLaughDetectorRef.current = new AudioLaughDetector(
+        new MediaStream([audioTrack]),
+        {
+          onAudioLaughEvent: handleAudioLaughEvent,
+          onDebug: (debug) => {
+            if (FAIR_PLAY_DEBUG_ENABLED) {
+              setAudioFairPlayDebug(debug)
+            }
+          },
+          onUnavailable: (reason) => {
+            setAudioFairPlayUnavailableReason(reason)
+          },
+        },
+      )
+    }
+
+    void audioLaughDetectorRef.current.start().catch((error) => {
+      const reason =
+        error instanceof Error
+          ? error.message
+          : '오디오 웃음 감지를 시작하지 못했습니다.'
+      setAudioFairPlayUnavailableReason(reason)
+    })
+  }, [
+    fairPlayLocalAudioTrack,
+    handleAudioLaughEvent,
+    shouldRunAudioFairPlay,
+  ])
 
   const activeMainParticipantId = displayedParticipants.some(
     (participant) => participant.id === selectedMainParticipantId,
@@ -3151,8 +5971,23 @@ export function MeetingRoomPage({
     stopSpeechRecognition()
     setIsSpeechRecognitionActive(false)
     endScreenShare()
+    if (
+      liveKitConnection
+      && terminalPhaseRef.current !== 'ended'
+    ) {
+      await leaveFreeBetaRoom({
+        roomName: liveKitConnection.roomName,
+        participantIdentity:
+          displayedLocalParticipant?.liveKitIdentity
+          ?? liveKitConnection.participantIdentity,
+      }).catch((error) => {
+        console.warn('[free-beta] Failed to mark room leave', error)
+      })
+    }
     await disconnectLiveKitRoom()
-    stopMediaStream(localParticipant?.mediaStream ?? null)
+    if (import.meta.env.DEV && localParticipant?.mediaStream) {
+      console.info('[room-camera] unpublished-preserve-local-track')
+    }
     saveMeetingTranscripts(meetingId, transcripts)
     saveChatMessages(meetingId, nextChatMessages)
 
@@ -3163,11 +5998,13 @@ export function MeetingRoomPage({
     disconnectLiveKitRoom,
     endScreenShare,
     localParticipant,
+    liveKitConnection,
     meetingId,
     onLeave,
     recordingEnabled,
     transcripts,
     translations,
+    displayedLocalParticipant?.liveKitIdentity,
     displayedParticipants,
     restoredMeetingSession?.createdAt,
     restoredMeetingSession?.startedAt,
@@ -3216,7 +6053,7 @@ export function MeetingRoomPage({
             roomName: liveKitConnection.roomName,
             requesterParticipantIdentity: actor.liveKitIdentity,
             requesterMeetingRole: actor.meetingRole,
-            hostControlToken,
+            hostControlToken: roomHostControlToken,
           }).catch((error) => {
             console.warn('[free-beta] Failed to verify host room end', error)
           })
@@ -3280,8 +6117,13 @@ export function MeetingRoomPage({
           localIdentity
           && message.payload.targetParticipantIdentity === localIdentity
         ) {
-          markParticipantKicked()
+          markParticipantKicked(message.payload.reason)
         }
+        return
+      }
+
+      if (message.type === 'host-changed') {
+        applyHostChanged(message.payload)
         return
       }
 
@@ -3312,10 +6154,9 @@ export function MeetingRoomPage({
           ?? displayedParticipants.find(
             (participant) => participant.meetingRole === 'host',
           )?.id.toString()
-
-        if (
-          !isCurrentUserHost
-          && (
+        const isAuthoritativeServerSnapshot = !senderParticipantIdentity
+        const isExpectedHostSnapshot =
+          (
             !expectedHostIdentity
             || message.payload.hostParticipantIdentity === expectedHostIdentity
           )
@@ -3323,21 +6164,60 @@ export function MeetingRoomPage({
             !expectedHostIdentity
             || senderParticipantIdentity === expectedHostIdentity
           )
-          && shouldAcceptGameStateSnapshot(
-            gameStateRef.current,
-            message.payload,
+
+        if (
+          (
+            isAuthoritativeServerSnapshot
+            || (!isCurrentUserHost && isExpectedHostSnapshot)
+          )
+          && (
+            isAuthoritativeServerSnapshot
+              ? shouldAcceptServerRoomSnapshot(
+                  gameStateRef.current,
+                  message.payload,
+                )
+              : shouldAcceptGameStateSnapshot(
+                  gameStateRef.current,
+                  message.payload,
+                )
           )
         ) {
-          gameStateRef.current = message.payload
+          const scopedGameState = scopePostGameSnapshotToRoster(
+            message.payload,
+            gameStateRef.current,
+          )
+
+          setRoomHostParticipantIdentity(scopedGameState.hostParticipantIdentity)
+          logRejoinDebug('current room phase applied', {
+            phase: scopedGameState.phase,
+            revision: scopedGameState.revision,
+          })
+          if (import.meta.env.DEV) {
+            console.info('[fair-play-shared]', {
+              phase: scopedGameState.phase,
+              participants: scopedGameState.fairPlay?.check?.activePlayerIdentities
+                .map((participantIdentity) => ({
+                  identity: participantIdentity,
+                  status: isFairPlayCheckPassed(
+                    scopedGameState.fairPlay?.check?.participants[
+                      participantIdentity
+                    ],
+                  )
+                    ? 'passed'
+                    : 'checking',
+                })) ?? [],
+            })
+          }
+          gameStateRef.current = scopedGameState
           setReadyParticipantIdentities(
-            message.payload.participants
+            scopedGameState.participants
               .filter((participant) => participant.isReady)
               .map((participant) => participant.participantIdentity)
               .filter((participantIdentity): participantIdentity is string => (
                 typeof participantIdentity === 'string'
               )),
           )
-          setGameState(message.payload)
+          setGameState(scopedGameState)
         }
         return
       }
@@ -3370,6 +6250,18 @@ export function MeetingRoomPage({
 
           return Array.from(currentSet)
         })
+        return
+      }
+
+      if (message.type === 'fair-play-check-status') {
+        if (
+          senderParticipantIdentity
+          && senderParticipantIdentity !== message.payload.participantIdentity
+        ) {
+          return
+        }
+
+        applyFairPlayCheckStatusFromHost(message.payload)
         return
       }
 
@@ -3411,6 +6303,26 @@ export function MeetingRoomPage({
           message.payload.roundNumber,
           message.payload.attackSequence,
         )
+        return
+      }
+
+      if (message.type === 'fair-play-event-request') {
+        if (
+          !isCurrentUserHost
+          || !senderParticipantIdentity
+          || message.payload.meetingId !== meetingId
+          || message.payload.roomCode !== roomCode
+        ) {
+          return
+        }
+
+        applyFairPlayEventFromHost(senderParticipantIdentity, {
+          eventId: message.payload.eventId,
+          reason: message.payload.reason,
+          roundNumber: message.payload.roundNumber,
+          attackSequence: message.payload.attackSequence,
+          detectedAt: message.payload.detectedAt,
+        })
         return
       }
 
@@ -3497,29 +6409,6 @@ export function MeetingRoomPage({
         message.payload,
         senderParticipant?.id ?? null,
       )
-      const localIdentity =
-        displayedLocalParticipant?.liveKitIdentity
-        ?? liveKitConnection?.participantIdentity
-        ?? (
-          displayedLocalParticipant
-            ? String(displayedLocalParticipant.id)
-            : undefined
-        )
-      const isMine =
-        message.payload.senderId === localIdentity
-        || (
-          incomingChatMessage.senderId !== null
-          && incomingChatMessage.senderId === displayedLocalParticipant?.id
-        )
-
-      if (
-        message.type === 'chat-message'
-        && !isMine
-        && conversationTab !== 'chat'
-      ) {
-        setChatUnreadCount((current) => current + 1)
-      }
-
       setChatMessages((current) => {
         if (current.some((item) => item.id === incomingChatMessage.id)) {
           return current
@@ -3531,11 +6420,13 @@ export function MeetingRoomPage({
     },
     [
       chatMessages,
-      conversationTab,
       displayedLocalParticipant,
       displayedParticipants,
       finalizeMeetingAndNavigate,
       approveAttackContentFromHost,
+      applyFairPlayCheckStatusFromHost,
+      applyFairPlayEventFromHost,
+      applyHostChanged,
       createCurrentGameStateSnapshot,
       isCurrentUserHost,
       liveKitConnection?.participantIdentity,
@@ -3651,6 +6542,37 @@ export function MeetingRoomPage({
 
   return (
     <section className="meeting-page">
+      <video
+        ref={fairPlayVideoRef}
+        className="fair-play-analysis-video"
+        muted
+        playsInline
+        aria-hidden="true"
+      />
+      {hostTransferNotice && (
+        <div
+          className="host-transfer-notice"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>{hostTransferNotice}</strong>
+          <span>방장 권한을 넘겨받았습니다.</span>
+        </div>
+      )}
+      {copyMessage && copyTooltipPosition && createPortal(
+        <span
+          className={`meeting-copy-feedback is-portal ${copyMessage.includes('실패') ? 'is-error' : ''}`}
+          role="status"
+          aria-live="polite"
+          style={{
+            top: copyTooltipPosition.top,
+            left: copyTooltipPosition.left,
+          }}
+        >
+          {copyMessage}
+        </span>,
+        document.body,
+      )}
       <header className="meeting-header">
         <div className="meeting-header-main">
           <Logo />
@@ -3658,6 +6580,7 @@ export function MeetingRoomPage({
           <strong>{roomName}</strong>
           <span className="meeting-room-code-wrap">
             <button
+              ref={roomCodeButtonRef}
               className="meeting-room-code"
               type="button"
               onClick={copyRoomCode}
@@ -3666,15 +6589,6 @@ export function MeetingRoomPage({
             >
               {roomCode} <Icon name="copy" size={13} />
             </button>
-            {copyMessage && (
-              <span
-                className={`meeting-copy-feedback ${copyMessage.includes('실패') ? 'is-error' : ''}`}
-                role="status"
-                aria-live="polite"
-              >
-                {copyMessage}
-              </span>
-            )}
           </span>
           <span className="participant-count">
             <Icon name="users" size={15} /> {displayedParticipants.length}
@@ -3771,14 +6685,71 @@ export function MeetingRoomPage({
                   onCollapse={() => setIsScreenShareExpanded(false)}
                   onStop={() => void toggleScreenShare()}
                 />
+              ) : isParticipantsOpen ? (
+                <div className="players-mode-root">
+                  <PlayerGallery
+                    participants={displayedParticipants}
+                    maxParticipants={participantCount}
+                    phase={gameState.phase}
+                    roundNumber={gameState.roundNumber}
+                    countdownStartedAt={gameState.countdownStartedAt}
+                    countdownDurationMs={gameState.countdownDurationMs}
+                    attackEndsAt={gameState.attackEndsAt}
+                    maxLives={gameState.initialLives ?? initialLives}
+                    selectedParticipantId={activeMainParticipantId}
+                    readyParticipantIdentities={activeReadyParticipantIdentities}
+                    attackerIdentity={
+                      shouldShowGameRoleBadges
+                        ? gameState.attackerIdentity
+                        : undefined
+                    }
+                    defenderIdentities={
+                      shouldShowGameRoleBadges
+                        ? gameState.defenderIdentities
+                        : undefined
+                    }
+                    isAttackActive={gameState.phase === 'attack-active'}
+                    playerStates={gameState.playerStates}
+                    fairPlayWarningParticipantIdentity={
+                      fairPlayWarning.active
+                        ? localParticipantIdentity
+                        : undefined
+                    }
+                    onSelectParticipant={(participantId) => {
+                      setSelectedMainParticipantId(participantId)
+                    }}
+                    onReconnectMedia={onReconnectMedia}
+                    onReturnToGame={() => {
+                      setIsParticipantsOpen(false)
+                      window.setTimeout(() => {
+                        controlBarParticipantsButtonRef.current?.focus()
+                      }, 0)
+                    }}
+                  />
+                </div>
               ) : (
                 <MeetMeetRoomLayout
                   participants={displayedParticipants}
                   selectedParticipantId={activeMainParticipantId}
                   readyParticipantIdentities={activeReadyParticipantIdentities}
-                  attackerIdentity={gameState.attackerIdentity}
-                  defenderIdentities={gameState.defenderIdentities}
+                  attackerIdentity={
+                    shouldShowGameRoleBadges
+                      ? gameState.attackerIdentity
+                      : undefined
+                  }
+                  defenderIdentities={
+                    shouldShowGameRoleBadges
+                      ? gameState.defenderIdentities
+                      : undefined
+                  }
                   isAttackActive={gameState.phase === 'attack-active'}
+                  playerStates={gameState.playerStates}
+                  maxLives={gameState.initialLives ?? initialLives}
+                  fairPlayWarningParticipantIdentity={
+                    fairPlayWarning.active
+                      ? localParticipantIdentity
+                      : undefined
+                  }
                   onSelectParticipant={(participantId) => {
                     setSelectedMainParticipantId(participantId)
                     setViewMode('focus')
@@ -3789,6 +6760,7 @@ export function MeetingRoomPage({
                       phase={gameState.phase}
                       statusText={gameStatusText}
                       chatMessages={chatMessages}
+                      timelineEvents={gameTimelineEvents}
                       localParticipantId={
                         displayedLocalParticipant?.id ?? localParticipant?.id
                       }
@@ -3799,13 +6771,40 @@ export function MeetingRoomPage({
                       countdownDurationMs={gameState.countdownDurationMs}
                       attackEndsAt={gameState.attackEndsAt}
                       attackDurationMs={gameState.attackDurationMs}
+                      attackEndReason={gameState.attackEndReason}
                       attackContent={gameState.attackContent}
                       roundNumber={gameState.roundNumber}
+                      activePlayerIdentities={gameState.activePlayerIdentities}
+                      attackSequence={gameState.attackSequence}
+                      maxLives={gameState.initialLives ?? initialLives}
                       attackerName={attackerName}
+                      participantNamesByIdentity={participantNamesByIdentity}
+                      playerStates={gameState.playerStates}
+                      roundResult={gameState.roundResult}
+                      fairPlayCheckParticipants={fairPlayCheckParticipants}
+                      localFairPlayCheckStatus={localFairPlayCheckStatus}
+                      fairPlayWarning={fairPlayWarning}
+                      fairPlayLastEvent={gameState.fairPlay?.lastEvent}
+                      fairPlayDamageLocked={Boolean(
+                        isLocalFairPlayDamageLocked
+                      )}
+                      isAudioFairPlayActive={shouldRunAudioFairPlay}
+                      audioFairPlayDebug={
+                        FAIR_PLAY_DEBUG_ENABLED ? audioFairPlayDebug : null
+                      }
+                      audioFairPlayUnavailableReason={
+                        FAIR_PLAY_DEBUG_ENABLED
+                          ? audioFairPlayUnavailableReason
+                          : ''
+                      }
+                      fairPlayDebug={FAIR_PLAY_DEBUG_ENABLED ? fairPlayDebug : null}
+                      winnerName={winnerName}
                       localGameRole={localGameRole}
                       readyStatusText={readyStatusText}
                       isLocalReady={isLocalParticipantReady}
                       canToggleReady={canToggleReady}
+                      autoReadyRemainingSeconds={autoReadyRemainingSeconds}
+                      autoStartRemainingSeconds={autoStartRemainingSeconds}
                       isHost={isCurrentUserHost}
                       canStartGame={canStartGame}
                       canRequestAttackStart={canRequestAttackStart}
@@ -3819,9 +6818,10 @@ export function MeetingRoomPage({
                           : ''
                       }
                       onToggleReady={handleToggleReady}
-                      onStartGame={handleStartGame}
+                      onStartGame={() => handleStartGame('manual')}
                       onUploadAttackContent={handleUploadAttackContent}
                       onRequestAttackStart={handleRequestAttackStart}
+                      onStartNextRound={handleStartNextRound}
                       screenShareSlot={
                         activeScreenShareStream ? (
                           <ScreenShareCard
@@ -3881,23 +6881,6 @@ export function MeetingRoomPage({
           onCaptionSizeChange={setCaptionSize}
           onSpeechRecognitionLanguageChange={setSpeechRecognitionLanguage}
           onRecordingEnabledChange={setRecordingEnabled}
-        />
-      )}
-
-      {isParticipantsOpen && (
-        <ParticipantsPanel
-          participants={displayedParticipants}
-          message={participantRemoveMessage}
-          onClose={() => {
-            setIsParticipantsOpen(false)
-            window.setTimeout(() => {
-              controlBarParticipantsButtonRef.current?.focus()
-            }, 0)
-          }}
-          onRequestRemove={(participant) => {
-            setParticipantRemoveMessage('')
-            setParticipantToRemove(participant)
-          }}
         />
       )}
 
@@ -4083,12 +7066,10 @@ export function MeetingRoomPage({
           participant={displayedLocalParticipant ?? localParticipant}
           isCaptionActive={sttEnabled}
           isScreenSharing={isLocalScreenSharing}
-          isConversationOpen={isConversationOpen}
           isParticipantsOpen={isParticipantsOpen}
           isSettingsOpen={isSettingsOpen}
           isHost={isCurrentUserHost}
           recordingEnabled={recordingEnabled}
-          chatUnreadCount={chatUnreadCount}
           viewMode={isScreenShareLayoutActive ? 'grid' : viewMode}
           showCaptionHint={showCaptionHint}
           captionMessage={
@@ -4100,7 +7081,6 @@ export function MeetingRoomPage({
           liveCaptionText={liveCaptionText}
           screenShareMessage={screenShareMessage}
           captionButtonRef={captionButtonRef}
-          chatButtonRef={controlBarChatButtonRef}
           participantsButtonRef={controlBarParticipantsButtonRef}
           settingsButtonRef={controlBarSettingsButtonRef}
           showTranslationLockButton={TRANSLATION_MODE_CONFIG.isPremiumLocked}
@@ -4116,12 +7096,31 @@ export function MeetingRoomPage({
               setViewMode((current) => current === 'grid' ? 'focus' : 'grid')
             }
           }}
+          onOpenGameMode={() => {
+            setIsParticipantsOpen(false)
+          }}
           onToggleParticipants={toggleParticipantsPanel}
-          onOpenChat={() => toggleConversationPanel('chat')}
           onToggleSettings={toggleSettingsPanel}
           onRequestEnd={() => setIsEndModalOpen(true)}
         />
       )}
+
+      <div
+        className="mobile-orientation-gate"
+        role="status"
+        aria-live="polite"
+      >
+        <section
+          className="mobile-orientation-card"
+          aria-label="세로 화면 안내"
+        >
+          <span className="mobile-orientation-icon" aria-hidden="true">
+            <Icon name="screen" size={34} />
+          </span>
+          <strong>세로 화면으로 돌려주세요</strong>
+          <p>MEET MEET 게임룸은 세로 화면에 최적화되어 있어요.</p>
+        </section>
+      </div>
     </section>
   )
 }

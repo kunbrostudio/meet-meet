@@ -6,6 +6,7 @@ export type {
 export type { CaptionPreferences, CaptionSize } from './caption'
 export type {
   LocalMediaState,
+  GameReadySnapshot,
   MediaDeviceSelection,
   MeetingHistoryItem,
   MeetingMeta,

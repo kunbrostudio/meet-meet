@@ -48,6 +48,17 @@ export type LocalMediaState = {
   microphoneEnabled: boolean
 }
 
+export type GameReadySnapshot = {
+  cameraPassed: boolean
+  facePassed: boolean
+  mouthPassed: boolean
+  smilePassed: boolean
+  ready: boolean
+  verifiedTrackId: string
+  verifiedDeviceId?: string
+  verifiedAt: string
+}
+
 export type MediaDeviceSelection = {
   videoDeviceId: string
   audioDeviceId: string

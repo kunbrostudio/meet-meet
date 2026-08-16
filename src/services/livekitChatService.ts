@@ -942,6 +942,8 @@ function isGameFairPlayEventRequest(
       || request.reason === 'hidden-audio-laugh'
       || request.reason === 'mouth-occlusion-timeout'
       || request.reason === 'face-not-visible-timeout'
+      || request.reason === 'visibility-face-lost'
+      || request.reason === 'visibility-camera-off'
     )
     && typeof request.roundNumber === 'number'
     && Number.isFinite(request.roundNumber)

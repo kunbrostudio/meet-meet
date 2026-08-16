@@ -167,6 +167,7 @@ const GAME_ROLE_REVEAL_DURATION_MS = 2600
 const GAME_ATTACK_DURATION_MS = 30_000
 const GAME_ATTACK_END_REVIEW_DURATION_MS = 2400
 const GAME_TURN_HANDOFF_DURATION_MS = 1700
+const VISIBILITY_PENALTY_COUNTDOWN_MS = 3000
 const GAME_AUTO_READY_DELAY_MS = 15_000
 const GAME_AUTO_START_DELAY_MS = 10_000
 const FAIR_PLAY_DEBUG_ENABLED = import.meta.env.VITE_FAIR_PLAY_DEBUG === 'true'
@@ -813,6 +814,20 @@ export function MeetingRoomPage({
   const attackCompletionTimerRef = useRef<number | null>(null)
   const roundTransitionTimerRef = useRef<number | null>(null)
   const postGameTransitionTimerRef = useRef<number | null>(null)
+  const visibilityPenaltyTimerRef = useRef<number | null>(null)
+  const visibilityPenaltyIntervalRef = useRef<number | null>(null)
+  const visibilityPenaltyInitialTimerRef = useRef<number | null>(null)
+  const visibilityPenaltyKeyRef = useRef('')
+  const visibilityPenaltyDeadlineRef = useRef(0)
+  const visibilityPenaltyEpisodeIdRef = useRef(0)
+  const visibilityPenaltyActiveEpisodeRef = useRef<{
+    episodeId: number
+    key: string
+    attackId: string
+    participantIdentity: string
+    status: 'FACE_LOST' | 'CAMERA_OFF'
+    deadline: number
+  } | null>(null)
   const processedAttackStartRequestsRef = useRef(new Set<string>())
   const processedAttackContentRequestsRef = useRef(new Set<string>())
   const screenShareStreamRef = useRef<MediaStream | null>(null)
@@ -925,6 +940,19 @@ export function MeetingRoomPage({
       if (postGameTransitionTimerRef.current !== null) {
         window.clearTimeout(postGameTransitionTimerRef.current)
       }
+      if (visibilityPenaltyTimerRef.current !== null) {
+        window.clearTimeout(visibilityPenaltyTimerRef.current)
+      }
+      if (visibilityPenaltyIntervalRef.current !== null) {
+        window.clearInterval(visibilityPenaltyIntervalRef.current)
+      }
+      if (visibilityPenaltyInitialTimerRef.current !== null) {
+        window.clearTimeout(visibilityPenaltyInitialTimerRef.current)
+      }
+      visibilityPenaltyKeyRef.current = ''
+      visibilityPenaltyDeadlineRef.current = 0
+      visibilityPenaltyEpisodeIdRef.current += 1
+      visibilityPenaltyActiveEpisodeRef.current = null
       eliminationRemovalTimers.forEach((timer) => {
         window.clearTimeout(timer)
       })
@@ -2138,7 +2166,13 @@ export function MeetingRoomPage({
     liveKitConnectingRoomRef.current = null
     autoLiveKitConnectRoomRef.current = roomCode || meetingId
     controller?.disconnect()
-  }, [meetingId, roomCode])
+    if (import.meta.env.DEV && localParticipant?.mediaStream) {
+      console.info('[app-camera] room disconnected, session preserved', {
+        reason,
+        trackId: localParticipant.mediaStream.getVideoTracks()[0]?.id,
+      })
+    }
+  }, [localParticipant?.mediaStream, meetingId, roomCode])
 
   const removeParticipant = async () => {
     if (isRemovingParticipant) {
@@ -3480,6 +3514,14 @@ export function MeetingRoomPage({
       || currentGameState.readyParticipantCount
         !== currentGameState.connectedParticipantCount
     ) {
+      logMatchStartDebug('start blocked', {
+        source: startSource,
+        isHost: isCurrentUserHost,
+        phase: currentGameState.phase,
+        connected: currentGameState.connectedParticipantCount,
+        required: currentGameState.participantCount,
+        ready: currentGameState.readyParticipantCount,
+      })
       return
     }
 
@@ -3500,33 +3542,24 @@ export function MeetingRoomPage({
       })
 
     if (activePlayerIdentities.length < 2) {
-      return
-    }
-
-    const fairPlayCheck = createFairPlayCheckState({
-      activePlayerIdentities,
-      participantNamesByIdentity,
-      previous: currentGameState.fairPlay?.check,
-    })
-    const allPassed = activePlayerIdentities.every((participantIdentity) => (
-      isFairPlayCheckPassed(fairPlayCheck.participants[participantIdentity])
-    ))
-
-    if (!allPassed) {
+      logMatchStartDebug('start blocked: insufficient roster', {
+        source: startSource,
+        roster: activePlayerIdentities,
+      })
       return
     }
 
     matchStartInFlightRef.current = true
     cancelGameAutoStartTimers(`${startSource}-start`)
     setAutoStartRemainingSeconds(null)
-    logMatchStartDebug(
-      startSource === 'auto' ? 'auto-start fired' : 'host manual start',
-      {
-        revision: currentGameState.revision,
-        participantCount: currentGameState.connectedParticipantCount,
-        roster: activePlayerIdentities,
-      },
-    )
+    logMatchStartDebug('request accepted', {
+      source: startSource,
+      revision: currentGameState.revision,
+      isHost: isCurrentUserHost,
+      participantCount: currentGameState.connectedParticipantCount,
+      ready: currentGameState.readyParticipantCount,
+      roster: activePlayerIdentities,
+    })
 
     const turnOrder = createTurnOrder(activePlayerIdentities)
     const now = new Date().toISOString()
@@ -3551,13 +3584,7 @@ export function MeetingRoomPage({
         currentGameState.initialLives ?? initialLives,
       ),
       roundResult: null,
-      fairPlay: {
-        ...currentGameState.fairPlay,
-        check: {
-          ...fairPlayCheck,
-          passedAt: now,
-        },
-      },
+      fairPlay: currentGameState.fairPlay,
     })
 
     const snapshotKey = getGameStateSnapshotKey(nextSnapshot)
@@ -3580,7 +3607,6 @@ export function MeetingRoomPage({
     initialLives,
     isCurrentUserHost,
     meetingId,
-    participantNamesByIdentity,
     participantCount,
     publishGameStateSnapshot,
     roomCode,
@@ -3874,23 +3900,30 @@ export function MeetingRoomPage({
     const hasVisualLaughSignal =
       visualDebug?.laughState === 'candidate'
       || visualSignalScore >= 0.42
-    const isMouthOccluded =
-      visualWarning.reason === 'mouth-occluded'
+    const visibilityStatus = visualWarning.status ?? visualDebug?.visibilityStatus
+    const isMouthUnclear =
+      visibilityStatus === 'MOUTH_UNCLEAR'
+      || visualWarning.reason === 'mouth-unclear'
       || visualDebug?.mouthOccluded === true
     const isFaceHidden =
-      visualWarning.reason === 'face-not-visible'
+      visibilityStatus === 'FACE_LOST'
+      || visibilityStatus === 'FACE_UNSTABLE'
+      || visualWarning.reason === 'face-lost'
+      || visualWarning.reason === 'face-unstable'
       || visualDebug?.faceVisible === false
-    const isFaceVisible = visualDebug?.faceVisible === true
+    const isVisibilityReliable =
+      visualDebug?.faceVisible === true
+      && !isMouthUnclear
+      && !isFaceHidden
     const reason =
-      isMouthOccluded && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
-        ? 'occluded-audio-laugh'
-        : isFaceHidden && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
-          ? 'hidden-audio-laugh'
-          : hasVisualLaughSignal && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
-            ? 'multimodal-laugh'
-            : isFaceVisible && event.audioLaughScore >= AUDIO_LAUGH_VERY_HIGH_THRESHOLD
-              ? 'audio-laugh'
-              : null
+      isVisibilityReliable
+      && hasVisualLaughSignal
+      && event.audioLaughScore >= AUDIO_LAUGH_TRIGGER_THRESHOLD
+        ? 'multimodal-laugh'
+        : isVisibilityReliable
+          && event.audioLaughScore >= AUDIO_LAUGH_VERY_HIGH_THRESHOLD
+          ? 'audio-laugh'
+          : null
 
     if (!reason) {
       return
@@ -4764,6 +4797,11 @@ export function MeetingRoomPage({
         currentGameState.phase !== 'countdown'
         || currentGameState.countdownStartedAt !== gameState.countdownStartedAt
       ) {
+        logMatchStartDebug('countdown completion ignored', {
+          phase: currentGameState.phase,
+          expectedStartedAt: gameState.countdownStartedAt,
+          actualStartedAt: currentGameState.countdownStartedAt,
+        })
         return
       }
 
@@ -4775,7 +4813,7 @@ export function MeetingRoomPage({
         previousRevision: currentGameState.revision,
         hostParticipantIdentity: currentGameState.hostParticipantIdentity,
         readyParticipantIdentities: activeReadyParticipantIdentities,
-      initialLives: currentGameState.initialLives ?? initialLives,
+        initialLives: currentGameState.initialLives ?? initialLives,
         phase: 'game-started',
         countdownStartedAt: currentGameState.countdownStartedAt,
         countdownDurationMs: currentGameState.countdownDurationMs,
@@ -4796,6 +4834,8 @@ export function MeetingRoomPage({
       publishedGameStateSnapshotRef.current = snapshotKey
       logMatchStartDebug('match started', {
         countdownStartedAt: currentGameState.countdownStartedAt,
+        roster: currentGameState.activePlayerIdentities,
+        turnOrder: currentGameState.turnOrder,
         revision: nextSnapshot.revision,
       })
       void publishGameStateSnapshot(nextSnapshot)
@@ -4831,13 +4871,32 @@ export function MeetingRoomPage({
       return
     }
 
-    const activePlayerIdentities = getActivePlayerIdentities({
-      participants: displayedParticipants,
-      participantCount,
-      readyParticipantIdentities: activeReadyParticipantIdentities,
-    })
+    const connectedParticipantIdentities = new Set(
+      displayedParticipants
+        .slice(0, participantCount)
+        .map(getParticipantGameIdentity),
+    )
+    const snapshotActivePlayerIdentities = (
+      gameState.activePlayerIdentities
+      ?? gameStateRef.current.activePlayerIdentities
+      ?? []
+    ).filter((participantIdentity) => (
+      connectedParticipantIdentities.has(participantIdentity)
+    ))
+    const activePlayerIdentities = snapshotActivePlayerIdentities.length >= 2
+      ? snapshotActivePlayerIdentities
+      : getActivePlayerIdentities({
+          participants: displayedParticipants,
+          participantCount,
+          readyParticipantIdentities: activeReadyParticipantIdentities,
+        })
 
     if (activePlayerIdentities.length < 2) {
+      logMatchStartDebug('role reveal blocked: insufficient roster', {
+        snapshotRoster: gameState.activePlayerIdentities,
+        fallbackRoster: activePlayerIdentities,
+        connected: [...connectedParticipantIdentities],
+      })
       const nextSnapshot = createGameStateSnapshot({
         meetingId,
         roomCode,
@@ -4859,7 +4918,21 @@ export function MeetingRoomPage({
       return
     }
 
-    const turnOrder = createTurnOrder(activePlayerIdentities)
+    const existingTurnOrder = (
+      gameState.turnOrder
+      ?? gameStateRef.current.turnOrder
+      ?? []
+    ).filter((participantIdentity) => (
+      activePlayerIdentities.includes(participantIdentity)
+    ))
+    const turnOrder = existingTurnOrder.length > 0
+      ? [
+          ...existingTurnOrder,
+          ...activePlayerIdentities.filter((participantIdentity) => (
+            !existingTurnOrder.includes(participantIdentity)
+          )),
+        ]
+      : createTurnOrder(activePlayerIdentities)
     const attackerIdentity = turnOrder[0]
     const nextSnapshot = createGameStateSnapshot({
       meetingId,
@@ -4895,6 +4968,12 @@ export function MeetingRoomPage({
     gameStateRef.current = nextSnapshot
     setGameState(nextSnapshot)
     publishedGameStateSnapshotRef.current = snapshotKey
+    logMatchStartDebug('role reveal started', {
+      roster: activePlayerIdentities,
+      turnOrder,
+      attackerIdentity,
+      revision: nextSnapshot.revision,
+    })
     void publishGameStateSnapshot(nextSnapshot)
   }, [
     activeReadyParticipantIdentities,
@@ -5560,10 +5639,303 @@ export function MeetingRoomPage({
     && Boolean(localParticipantIdentity)
     && !gameState.playerStates?.[localParticipantIdentity ?? '']?.eliminated
     && !isLocalFairPlayDamageLocked
+  const localFairPlayCameraOffWarning = useMemo<FairPlayWarningState>(() => ({
+    active: true,
+    status: 'CAMERA_OFF',
+    reason: 'camera-off',
+    message: 'TURN CAMERA ON',
+  }), [])
   const shouldRunAudioFairPlay =
     shouldRunAttackFairPlay
     && Boolean(fairPlayLocalAudioTrack)
   const localFairPlaySessionKey = ''
+
+  const cancelVisibilityPenaltyEpisode = useCallback((reason: string) => {
+    const activeEpisode = visibilityPenaltyActiveEpisodeRef.current
+    let cancelled = Boolean(activeEpisode)
+
+    if (visibilityPenaltyTimerRef.current !== null) {
+      window.clearTimeout(visibilityPenaltyTimerRef.current)
+      visibilityPenaltyTimerRef.current = null
+      cancelled = true
+    }
+
+    if (visibilityPenaltyIntervalRef.current !== null) {
+      window.clearInterval(visibilityPenaltyIntervalRef.current)
+      visibilityPenaltyIntervalRef.current = null
+      cancelled = true
+    }
+
+    if (visibilityPenaltyInitialTimerRef.current !== null) {
+      window.clearTimeout(visibilityPenaltyInitialTimerRef.current)
+      visibilityPenaltyInitialTimerRef.current = null
+      cancelled = true
+    }
+
+    visibilityPenaltyEpisodeIdRef.current += 1
+    visibilityPenaltyActiveEpisodeRef.current = null
+    visibilityPenaltyKeyRef.current = ''
+    visibilityPenaltyDeadlineRef.current = 0
+
+    if (cancelled && import.meta.env.DEV) {
+      console.info('[visibility-penalty] episode cancelled', {
+        episodeId: activeEpisode?.episodeId,
+        attackId: activeEpisode?.attackId,
+        participant: activeEpisode?.participantIdentity,
+        reason,
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    const currentGameState = gameStateRef.current
+    const participantIdentity = localParticipantIdentityRef.current
+    const warningStatus = fairPlayWarning.status
+    const isPenaltyStatus =
+      warningStatus === 'FACE_LOST'
+      || warningStatus === 'CAMERA_OFF'
+    const currentAttackId = [
+      currentGameState.roundNumber ?? 'round',
+      currentGameState.attackSequence ?? 'attack',
+      currentGameState.attackerIdentity ?? 'attacker',
+    ].join(':')
+    const localAttackReportKey = [
+      currentGameState.roundNumber ?? 'round',
+      currentGameState.attackSequence ?? 'attack',
+      currentGameState.attackerIdentity ?? 'attacker',
+      participantIdentity ?? 'defender',
+    ].join(':')
+
+    if (
+      !shouldRunAttackFairPlay
+      || !participantIdentity
+      || currentGameState.phase !== 'attack-active'
+      || currentGameState.penalizedParticipantIdentitiesForCurrentAttack
+        ?.includes(participantIdentity)
+      || localFairPlayAttackReportRef.current.has(localAttackReportKey)
+      || !isPenaltyStatus
+    ) {
+      const cancelReason =
+        currentGameState.phase !== 'attack-active'
+          ? 'attack-ended'
+          : localFairPlayAttackReportRef.current.has(localAttackReportKey)
+            || currentGameState.penalizedParticipantIdentitiesForCurrentAttack
+              ?.includes(participantIdentity ?? '')
+            ? 'already-hit'
+          : warningStatus === 'MOUTH_UNCLEAR' || warningStatus === 'FACE_UNSTABLE'
+            ? 'non-penalty-status'
+            : 'recovered'
+
+      if (
+        cancelReason === 'recovered'
+        && visibilityPenaltyKeyRef.current
+        && import.meta.env.DEV
+      ) {
+        console.info('[visibility-penalty] recovered', {
+          participant: participantIdentity,
+          remainingMs: Math.max(0, visibilityPenaltyDeadlineRef.current - Date.now()),
+        })
+      }
+
+      cancelVisibilityPenaltyEpisode(cancelReason)
+      return
+    }
+
+    const attackKey = [
+      participantIdentity,
+      currentGameState.roundNumber ?? 'round',
+      currentGameState.attackSequence ?? 'attack',
+      currentGameState.attackerIdentity ?? 'attacker',
+      warningStatus,
+    ].join(':')
+
+    if (visibilityPenaltyKeyRef.current === attackKey) {
+      return
+    }
+
+    cancelVisibilityPenaltyEpisode('restart')
+    const episodeId = visibilityPenaltyEpisodeIdRef.current + 1
+    const deadline = Date.now() + VISIBILITY_PENALTY_COUNTDOWN_MS
+
+    visibilityPenaltyEpisodeIdRef.current = episodeId
+    visibilityPenaltyKeyRef.current = attackKey
+    visibilityPenaltyDeadlineRef.current = deadline
+    visibilityPenaltyActiveEpisodeRef.current = {
+      episodeId,
+      key: attackKey,
+      attackId: currentAttackId,
+      participantIdentity,
+      status: warningStatus,
+      deadline,
+    }
+
+    const getRemainingMs = () => Math.max(
+      0,
+      deadline - Date.now(),
+    )
+    const updateWarningCountdown = () => {
+      const activeEpisode = visibilityPenaltyActiveEpisodeRef.current
+
+      if (
+        !activeEpisode
+        || activeEpisode.episodeId !== episodeId
+        || activeEpisode.key !== attackKey
+        || activeEpisode.deadline !== deadline
+      ) {
+        if (import.meta.env.DEV) {
+          console.info('[visibility-penalty] stale callback ignored', {
+            callbackEpisodeId: episodeId,
+            currentEpisodeId: activeEpisode?.episodeId,
+            attackId: currentAttackId,
+            callback: 'countdown-update',
+          })
+        }
+        if (activeEpisode?.episodeId === episodeId) {
+          cancelVisibilityPenaltyEpisode('stale-callback')
+        }
+        return
+      }
+
+      const remainingMs = getRemainingMs()
+      const nextWarning: FairPlayWarningState = {
+        ...fairPlayWarningRef.current,
+        active: true,
+        status: warningStatus,
+        reason: warningStatus === 'CAMERA_OFF' ? 'camera-off' : 'face-lost',
+        message: warningStatus === 'CAMERA_OFF'
+          ? 'TURN CAMERA ON'
+          : 'KEEP YOUR FACE VISIBLE',
+        remainingMs,
+      }
+
+      fairPlayWarningRef.current = nextWarning
+      setFairPlayWarning(nextWarning)
+    }
+
+    visibilityPenaltyInitialTimerRef.current = window.setTimeout(() => {
+      visibilityPenaltyInitialTimerRef.current = null
+      updateWarningCountdown()
+    }, 0)
+    visibilityPenaltyIntervalRef.current = window.setInterval(
+      updateWarningCountdown,
+      250,
+    )
+    visibilityPenaltyTimerRef.current = window.setTimeout(() => {
+      const activeEpisode = visibilityPenaltyActiveEpisodeRef.current
+
+      if (
+        !activeEpisode
+        || activeEpisode.episodeId !== episodeId
+        || activeEpisode.key !== attackKey
+        || activeEpisode.deadline !== deadline
+      ) {
+        if (import.meta.env.DEV) {
+          console.info('[visibility-penalty] stale callback ignored', {
+            callbackEpisodeId: episodeId,
+            currentEpisodeId: activeEpisode?.episodeId,
+            participant: participantIdentity,
+            callbackAttackId: currentAttackId,
+            callback: 'penalty-timeout',
+          })
+        }
+        return
+      }
+
+      visibilityPenaltyTimerRef.current = null
+      if (visibilityPenaltyIntervalRef.current !== null) {
+        window.clearInterval(visibilityPenaltyIntervalRef.current)
+        visibilityPenaltyIntervalRef.current = null
+      }
+      if (visibilityPenaltyInitialTimerRef.current !== null) {
+        window.clearTimeout(visibilityPenaltyInitialTimerRef.current)
+        visibilityPenaltyInitialTimerRef.current = null
+      }
+
+      const latestGameState = gameStateRef.current
+      const latestWarning = fairPlayWarningRef.current
+      const latestAttackId = [
+        latestGameState.roundNumber ?? 'round',
+        latestGameState.attackSequence ?? 'attack',
+        latestGameState.attackerIdentity ?? 'attacker',
+      ].join(':')
+      const latestAttackReportKey = [
+        latestGameState.roundNumber ?? 'round',
+        latestGameState.attackSequence ?? 'attack',
+        latestGameState.attackerIdentity ?? 'attacker',
+        participantIdentity,
+      ].join(':')
+
+      if (
+        activeEpisode.attackId !== currentAttackId
+        || activeEpisode.deadline !== deadline
+        || visibilityPenaltyKeyRef.current !== attackKey
+        || visibilityPenaltyDeadlineRef.current !== deadline
+        || latestGameState.phase !== 'attack-active'
+        || latestAttackId !== currentAttackId
+        || latestGameState.penalizedParticipantIdentitiesForCurrentAttack
+          ?.includes(participantIdentity)
+        || localFairPlayAttackReportRef.current.has(latestAttackReportKey)
+        || !latestWarning.active
+        || latestWarning.status !== warningStatus
+      ) {
+        if (import.meta.env.DEV) {
+          console.info('[visibility-penalty] stale callback ignored', {
+            callbackEpisodeId: episodeId,
+            currentEpisodeId: activeEpisode?.episodeId,
+            participant: participantIdentity,
+            callbackAttackId: currentAttackId,
+            currentAttackId: latestAttackId,
+            phase: latestGameState.phase,
+            status: latestWarning.status,
+            alreadyHit:
+              localFairPlayAttackReportRef.current.has(latestAttackReportKey)
+              || latestGameState.penalizedParticipantIdentitiesForCurrentAttack
+                ?.includes(participantIdentity),
+          })
+        }
+        cancelVisibilityPenaltyEpisode('stale-callback')
+        return
+      }
+
+      if (import.meta.env.DEV) {
+        console.info('[visibility-penalty] HIT confirmed', {
+          episodeId,
+          participant: participantIdentity,
+          attackId: currentAttackId,
+          reason: warningStatus,
+        })
+      }
+
+      handleLocalFairPlayEvent({
+        eventId: crypto.randomUUID(),
+        reason: warningStatus === 'CAMERA_OFF'
+          ? 'visibility-camera-off'
+          : 'visibility-face-lost',
+        detectorVersion: 'visibility-penalty-mvp-1',
+        detectedAt: new Date().toISOString(),
+      })
+      cancelVisibilityPenaltyEpisode('hit-confirmed')
+    }, VISIBILITY_PENALTY_COUNTDOWN_MS)
+
+    if (import.meta.env.DEV) {
+      console.info('[visibility-penalty] episode started', {
+        episodeId,
+        participant: participantIdentity,
+        attackId: currentAttackId,
+        reason: warningStatus,
+        deadline,
+      })
+    }
+  }, [
+    cancelVisibilityPenaltyEpisode,
+    fairPlayWarning.status,
+    gameState.attackSequence,
+    gameState.phase,
+    gameState.roundNumber,
+    gameState.attackerIdentity,
+    handleLocalFairPlayEvent,
+    shouldRunAttackFairPlay,
+  ])
 
   useEffect(() => {
     const video = fairPlayVideoRef.current
@@ -5637,9 +6009,13 @@ export function MeetingRoomPage({
         }))
       }
       const timer = window.setTimeout(() => {
-        fairPlayWarningRef.current = { active: false }
+        const nextWarning = shouldRunAttackFairPlay
+          ? localFairPlayCameraOffWarning
+          : { active: false }
+
+        fairPlayWarningRef.current = nextWarning
         fairPlayDebugRef.current = null
-        setFairPlayWarning({ active: false })
+        setFairPlayWarning(nextWarning)
         setFairPlayDebug(null)
       }, 0)
 
@@ -5728,6 +6104,9 @@ export function MeetingRoomPage({
           })
         },
         onWarning: (warning) => {
+          if (!warning.active) {
+            cancelVisibilityPenaltyEpisode('stable-visible')
+          }
           fairPlayWarningRef.current = warning
           setFairPlayWarning(warning)
         },
@@ -5770,9 +6149,42 @@ export function MeetingRoomPage({
     }
 
     if (shouldRunAttackFairPlay) {
+      if (!isLocalFairPlayCameraReady) {
+        const previousVisibilityStatus =
+          fairPlayWarningRef.current.status
+          ?? fairPlayDebugRef.current?.visibilityStatus
+          ?? 'UNKNOWN'
+
+        fairPlayDetectorRef.current.stop()
+        fairPlayDetectorModeRef.current = 'idle'
+        fairPlayWarningRef.current = localFairPlayCameraOffWarning
+        fairPlayDebugRef.current = null
+        if (
+          import.meta.env.DEV
+          && previousVisibilityStatus !== 'CAMERA_OFF'
+        ) {
+          console.info('[visibility]', {
+            from: previousVisibilityStatus,
+            to: 'CAMERA_OFF',
+            facePresent: false,
+            mouthReliable: false,
+            elapsedMs: 0,
+          })
+        }
+        const timer = window.setTimeout(() => {
+          setFairPlayWarning(localFairPlayCameraOffWarning)
+          setFairPlayDebug(null)
+        }, 0)
+
+        return () => window.clearTimeout(timer)
+      }
+
       if (fairPlayDetectorModeRef.current !== 'attack-detection') {
         fairPlayDetectorRef.current.stop()
         fairPlayDetectorModeRef.current = 'attack-detection'
+        cancelVisibilityPenaltyEpisode('attack-detector-started')
+        fairPlayWarningRef.current = { active: false }
+        setFairPlayWarning({ active: false })
         void fairPlayDetectorRef.current.startAttackDetection().catch((error) => {
           console.warn('[fair-play] Failed to start attack detector', error)
           fairPlayDetectorModeRef.current = 'idle'
@@ -5832,6 +6244,7 @@ export function MeetingRoomPage({
 
     fairPlayDetectorRef.current.stop()
     fairPlayDetectorModeRef.current = 'idle'
+    cancelVisibilityPenaltyEpisode('fair-play-stopped')
     const timer = window.setTimeout(() => {
       fairPlayWarningRef.current = { active: false }
       fairPlayDebugRef.current = null
@@ -5842,9 +6255,11 @@ export function MeetingRoomPage({
     return () => window.clearTimeout(timer)
   }, [
     displayedLocalParticipant?.name,
+    cancelVisibilityPenaltyEpisode,
     fairPlayLocalStream,
     handleLocalFairPlayEvent,
     isLocalFairPlayCameraReady,
+    localFairPlayCameraOffWarning,
     localFairPlaySessionKey,
     localParticipantIdentity,
     meetingId,
@@ -5986,7 +6401,9 @@ export function MeetingRoomPage({
     }
     await disconnectLiveKitRoom()
     if (import.meta.env.DEV && localParticipant?.mediaStream) {
-      console.info('[room-camera] unpublished-preserve-local-track')
+      console.info('[app-camera] room disconnected, session preserved', {
+        trackId: localParticipant.mediaStream.getVideoTracks()[0]?.id,
+      })
     }
     saveMeetingTranscripts(meetingId, transcripts)
     saveChatMessages(meetingId, nextChatMessages)
@@ -6715,6 +7132,11 @@ export function MeetingRoomPage({
                         ? localParticipantIdentity
                         : undefined
                     }
+                    fairPlayWarningMessage={
+                      fairPlayWarning.active
+                        ? fairPlayWarning.message
+                        : undefined
+                    }
                     onSelectParticipant={(participantId) => {
                       setSelectedMainParticipantId(participantId)
                     }}
@@ -6748,6 +7170,11 @@ export function MeetingRoomPage({
                   fairPlayWarningParticipantIdentity={
                     fairPlayWarning.active
                       ? localParticipantIdentity
+                      : undefined
+                  }
+                  fairPlayWarningMessage={
+                    fairPlayWarning.active
+                      ? fairPlayWarning.message
                       : undefined
                   }
                   onSelectParticipant={(participantId) => {

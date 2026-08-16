@@ -12,6 +12,7 @@ type ParticipantGameCardProps = {
   playerState?: GamePlayerState
   maxLives?: number
   isFairPlayWarning?: boolean
+  fairPlayWarningMessage?: string
   onSelect?: () => void
   onReconnectMedia?: () => void
 }
@@ -72,6 +73,7 @@ function ParticipantGameCardComponent({
   playerState,
   maxLives = 3,
   isFairPlayWarning = false,
+  fairPlayWarningMessage,
   onSelect,
   onReconnectMedia,
 }: ParticipantGameCardProps) {
@@ -173,6 +175,11 @@ function ParticipantGameCardComponent({
           <span className="participant-ready-badge">READY</span>
         )}
       </div>
+      {isFairPlayWarning && fairPlayWarningMessage && (
+        <div className="participant-visibility-warning" role="status">
+          {fairPlayWarningMessage}
+        </div>
+      )}
     </article>
   )
 }
@@ -199,5 +206,6 @@ export const ParticipantGameCard = memo(
     && previous.playerState?.lives === next.playerState?.lives
     && previous.playerState?.eliminated === next.playerState?.eliminated
     && previous.isFairPlayWarning === next.isFairPlayWarning
+    && previous.fairPlayWarningMessage === next.fairPlayWarningMessage
   ),
 )

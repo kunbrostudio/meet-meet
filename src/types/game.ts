@@ -128,6 +128,8 @@ export type GameFairPlayEventReason =
   | 'hidden-audio-laugh'
   | 'mouth-occlusion-timeout'
   | 'face-not-visible-timeout'
+  | 'visibility-face-lost'
+  | 'visibility-camera-off'
 
 export type GameFairPlayEventRecord = {
   eventId: string

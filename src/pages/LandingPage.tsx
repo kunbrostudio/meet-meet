@@ -8,13 +8,20 @@ import {
 } from '../services/fairPlayDetectorService'
 import { parseRoomCodeFromUrl } from '../services/roomService'
 import { fetchTotalPlayers } from '../services/statsService'
-import type { LocalMediaState, MediaDeviceSelection, MeetingPreferences } from '../types'
+import type {
+  GameReadySnapshot,
+  LocalMediaState,
+  MediaDeviceSelection,
+  MeetingPreferences,
+} from '../types'
 
 type LandingPageProps = {
   localMedia: LocalMediaState
+  gameReadySnapshot: GameReadySnapshot | null
   deviceSelection: MediaDeviceSelection
   initialPreferences: MeetingPreferences
   onLocalMediaChange: (media: LocalMediaState) => void
+  onGameReadySnapshotChange: (snapshot: GameReadySnapshot | null) => void
   onDeviceSelectionChange: (selection: MediaDeviceSelection) => void
   onCreateRoom: (preferences: MeetingPreferences, roomName: string) => string | null | Promise<string | null>
   onJoinRoom: (code: string, preferences: MeetingPreferences) => string | null | Promise<string | null>
@@ -254,6 +261,38 @@ function getVideoDeviceId(stream: MediaStream | null) {
 
 function getVideoTrackId(stream: MediaStream | null) {
   return stream?.getVideoTracks()[0]?.id ?? ''
+}
+
+function isValidGameReadySnapshot(
+  snapshot: GameReadySnapshot | null,
+  stream: MediaStream | null,
+) {
+  const videoTrack = stream?.getVideoTracks()[0]
+
+  return Boolean(
+    snapshot?.ready
+    && videoTrack
+    && videoTrack.readyState === 'live'
+    && videoTrack.enabled
+    && snapshot.verifiedTrackId === videoTrack.id,
+  )
+}
+
+function createCalibrationFromSnapshot(
+  snapshot: GameReadySnapshot,
+): GameReadyCalibrationState {
+  return {
+    status: 'passed',
+    mode: 'full',
+    cameraPassed: snapshot.cameraPassed,
+    facePassed: snapshot.facePassed,
+    mouthPassed: snapshot.mouthPassed,
+    smilePassed: snapshot.smilePassed,
+    message: '게임을 시작할 준비가 되었어요.',
+    deviceId: snapshot.verifiedDeviceId,
+    trackId: snapshot.verifiedTrackId,
+    calibratedAt: snapshot.verifiedAt,
+  }
 }
 
 function mapCheckStateToCalibration(
@@ -829,9 +868,11 @@ function LandingControlBar({
 
 export function LandingPage({
   localMedia,
+  gameReadySnapshot,
   deviceSelection,
   initialPreferences,
   onLocalMediaChange,
+  onGameReadySnapshotChange,
   onDeviceSelectionChange,
   onCreateRoom,
   onJoinRoom,
@@ -842,7 +883,9 @@ export function LandingPage({
   const [isJoinOpen, setIsJoinOpen] = useState(false)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [totalPlayers, setTotalPlayers] = useState<number | null>(null)
-  const [mediaMode, setMediaMode] = useState<MainMediaMode>('intro')
+  const [mediaMode, setMediaMode] = useState<MainMediaMode>(() => (
+    hasReadyVideo(localMedia.stream) ? 'camera' : 'intro'
+  ))
   const [playerName, setPlayerName] = useState(() => (
     getStoredPlayerName(initialPreferences.displayName)
   ))
@@ -868,7 +911,11 @@ export function LandingPage({
   const [cameraGateTooltipPosition, setCameraGateTooltipPosition] =
     useState<FloatingTooltipPosition | null>(null)
   const [calibration, setCalibration] =
-    useState<GameReadyCalibrationState>(initialCalibrationState)
+    useState<GameReadyCalibrationState>(() => (
+      isValidGameReadySnapshot(gameReadySnapshot, localMedia.stream)
+        ? createCalibrationFromSnapshot(gameReadySnapshot as GameReadySnapshot)
+        : initialCalibrationState
+    ))
   const cameraVideoRef = useRef<HTMLVideoElement>(null)
   const calibrationDetectorRef = useRef<FairPlayDetector | null>(null)
   const calibrationSessionKeyRef = useRef('')
@@ -876,7 +923,13 @@ export function LandingPage({
   const cameraSessionRestoreInProgressRef = useRef(false)
   const cameraReady = hasReadyVideo(localMedia.stream)
   const micReady = hasReadyAudio(localMedia.stream)
-  const isGameReady = cameraReady && calibration.status === 'passed'
+  const hasValidGameReadySnapshot =
+    isValidGameReadySnapshot(gameReadySnapshot, localMedia.stream)
+  const visibleCalibration =
+    hasValidGameReadySnapshot && gameReadySnapshot
+      ? createCalibrationFromSnapshot(gameReadySnapshot)
+      : calibration
+  const isGameReady = cameraReady && visibleCalibration.status === 'passed'
   const isDeviceGateSatisfied =
     isGameReady && (!cameraGateRequiresAudio || micReady)
   const visibleCameraGateMessage = isDeviceGateSatisfied ? '' : cameraGateMessage
@@ -888,13 +941,75 @@ export function LandingPage({
       : null
 
   useEffect(() => {
-    if (cameraVideoRef.current) {
-      cameraVideoRef.current.srcObject = localMedia.stream
-      if (localMedia.stream) {
-        void cameraVideoRef.current.play().catch(() => undefined)
+    const video = cameraVideoRef.current
+
+    if (!video || !cameraReady || !localMedia.stream) {
+      return
+    }
+
+    if (mediaMode !== 'camera') {
+      return
+    }
+
+    if (video.srcObject !== localMedia.stream) {
+      video.srcObject = localMedia.stream
+      if (import.meta.env.DEV) {
+        console.info('[app-camera] main preview attach', {
+          trackId: getVideoTrackId(localMedia.stream),
+          readyState: localMedia.stream.getVideoTracks()[0]?.readyState,
+        })
       }
     }
-  }, [activeTab, localMedia.stream, mediaMode])
+
+    void video.play().catch(() => undefined)
+  }, [activeTab, cameraReady, localMedia.stream, mediaMode])
+
+  useEffect(() => {
+    if (!cameraReady) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      setMediaMode((currentMode) => (
+        currentMode === 'intro' ? 'camera' : currentMode
+      ))
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [cameraReady, localMedia.stream])
+
+  useEffect(() => {
+    if (!hasValidGameReadySnapshot || !gameReadySnapshot) {
+      return
+    }
+
+    const nextCalibration = createCalibrationFromSnapshot(
+      gameReadySnapshot,
+    )
+
+    const timer = window.setTimeout(() => {
+      setCalibration((current) => {
+        if (
+          current.status === 'passed'
+          && current.trackId === nextCalibration.trackId
+        ) {
+          return current
+        }
+
+        if (import.meta.env.DEV) {
+          console.info('[game-ready] snapshot restored', {
+            verifiedTrackId: gameReadySnapshot?.verifiedTrackId,
+            ready: true,
+          })
+        }
+
+        return nextCalibration
+      })
+      setMediaMode('camera')
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [gameReadySnapshot, hasValidGameReadySnapshot, localMedia.stream])
 
   useEffect(() => {
     if (cameraRestoreAttemptedRef.current || !cameraReady) {
@@ -927,23 +1042,50 @@ export function LandingPage({
         trackId,
         calibratedAt: storedCalibration.calibratedAt,
       })
+      onGameReadySnapshotChange({
+        cameraPassed: true,
+        facePassed: true,
+        mouthPassed: true,
+        smilePassed: true,
+        ready: true,
+        verifiedTrackId: trackId,
+        verifiedDeviceId: deviceId,
+        verifiedAt: storedCalibration.calibratedAt,
+      })
 
       if (import.meta.env.DEV) {
         console.info('[camera-session] restored', {
           device: deviceId,
           calibrationStatus: 'passed',
         })
+        console.info('[game-ready] snapshot saved', {
+          ready: true,
+          camera: true,
+          face: true,
+          mouth: true,
+          smile: true,
+          verifiedTrackId: trackId,
+        })
       }
       cameraSessionRestoreInProgressRef.current = false
     }, 0)
 
     return () => window.clearTimeout(timer)
-  }, [cameraReady, localMedia.stream])
+  }, [cameraReady, localMedia.stream, onGameReadySnapshotChange])
 
   useEffect(() => {
     if (!cameraReady) {
       calibrationDetectorRef.current?.stop()
       calibrationSessionKeyRef.current = ''
+      if (gameReadySnapshot) {
+        if (import.meta.env.DEV) {
+          console.info('[game-ready] snapshot invalidated', {
+            reason: 'camera-not-ready',
+            verifiedTrackId: gameReadySnapshot.verifiedTrackId,
+          })
+        }
+        onGameReadySnapshotChange(null)
+      }
       const timer = window.setTimeout(() => {
         setCalibration((current) => ({
           ...initialCalibrationState,
@@ -952,6 +1094,12 @@ export function LandingPage({
         }))
       }, 0)
       return () => window.clearTimeout(timer)
+    }
+
+    if (hasValidGameReadySnapshot) {
+      calibrationDetectorRef.current?.stop()
+      calibrationSessionKeyRef.current = ''
+      return
     }
 
     if (mediaMode !== 'camera') {
@@ -1039,22 +1187,44 @@ export function LandingPage({
           }
 
           const calibratedAt = new Date().toISOString()
-          setCalibration((current) => ({
-            ...current,
+          const nextCalibration: GameReadyCalibrationState = {
             status: 'passed',
+            mode,
             cameraPassed: true,
             facePassed: true,
             mouthPassed: true,
             smilePassed: true,
             message: '게임을 시작할 준비가 되었어요.',
+            deviceId,
+            trackId,
             calibratedAt,
+          }
+          const nextSnapshot: GameReadySnapshot = {
+            cameraPassed: true,
+            facePassed: true,
+            mouthPassed: true,
+            smilePassed: true,
+            ready: true,
+            verifiedTrackId: trackId,
+            verifiedDeviceId: deviceId,
+            verifiedAt: calibratedAt,
+          }
+
+          setCalibration((current) => ({
+            ...current,
+            ...nextCalibration,
           }))
+          onGameReadySnapshotChange(nextSnapshot)
           if (import.meta.env.DEV) {
             console.info('[calibration]', {
               status: 'passed',
               mode,
               device: deviceId,
               calibratedAt,
+            })
+            console.info('[game-ready] snapshot saved', {
+              verifiedTrackId: trackId,
+              ready: true,
             })
           }
         },
@@ -1106,8 +1276,66 @@ export function LandingPage({
     calibration.status,
     calibration.trackId,
     cameraReady,
+    gameReadySnapshot,
+    hasValidGameReadySnapshot,
     localMedia.stream,
     mediaMode,
+    onGameReadySnapshotChange,
+  ])
+
+  useEffect(() => {
+    if (
+      !cameraReady
+      || calibration.status !== 'passed'
+      || !calibration.trackId
+      || getVideoTrackId(localMedia.stream) !== calibration.trackId
+      || gameReadySnapshot?.verifiedTrackId === calibration.trackId
+    ) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const trackId = getVideoTrackId(localMedia.stream)
+
+      if (!trackId || trackId !== calibration.trackId) {
+        return
+      }
+
+      const nextSnapshot: GameReadySnapshot = {
+        cameraPassed: true,
+        facePassed: true,
+        mouthPassed: true,
+        smilePassed: true,
+        ready: true,
+        verifiedTrackId: trackId,
+        verifiedDeviceId: calibration.deviceId ?? getVideoDeviceId(localMedia.stream),
+        verifiedAt: calibration.calibratedAt ?? new Date().toISOString(),
+      }
+
+      onGameReadySnapshotChange(nextSnapshot)
+
+      if (import.meta.env.DEV) {
+        console.info('[game-ready] snapshot saved', {
+          ready: true,
+          camera: true,
+          face: true,
+          mouth: true,
+          smile: true,
+          verifiedTrackId: trackId,
+        })
+      }
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [
+    calibration.calibratedAt,
+    calibration.deviceId,
+    calibration.status,
+    calibration.trackId,
+    cameraReady,
+    gameReadySnapshot?.verifiedTrackId,
+    localMedia.stream,
+    onGameReadySnapshotChange,
   ])
 
   useEffect(() => {
@@ -1166,6 +1394,15 @@ export function LandingPage({
     const currentStream = localMedia.stream
     currentStream?.getVideoTracks().forEach((track) => track.stop())
     cameraSessionRestoreInProgressRef.current = false
+    if (gameReadySnapshot) {
+      if (import.meta.env.DEV) {
+        console.info('[game-ready] snapshot invalidated', {
+          reason: 'user-camera-off',
+          verifiedTrackId: gameReadySnapshot.verifiedTrackId,
+        })
+      }
+      onGameReadySnapshotChange(null)
+    }
     const audioTracks = currentStream?.getAudioTracks() ?? []
     const nextStream = audioTracks.length > 0 ? new MediaStream(audioTracks) : null
 
@@ -1184,7 +1421,9 @@ export function LandingPage({
     setManualCameraOff(true)
     setMediaMode('intro')
     if (import.meta.env.DEV) {
-      console.info('[camera-session] user-stop')
+      console.info('[app-camera] explicitly stopped by user', {
+        trackId: currentStream?.getVideoTracks()[0]?.id,
+      })
     }
   }
 
@@ -1211,7 +1450,9 @@ export function LandingPage({
       setManualCameraOff(false)
       setMediaMode('camera')
       if (import.meta.env.DEV) {
-        console.info('[camera-session] created')
+        console.info('[app-camera] session created', {
+          trackId: mergedStream.getVideoTracks()[0]?.id,
+        })
       }
       return true
     } catch (error) {
@@ -1294,7 +1535,7 @@ export function LandingPage({
       console.info('[room-create] local validation', {
         cameraReady,
         micReady,
-        calibrationStatus: calibration.status,
+        calibrationStatus: visibleCalibration.status,
         canOpenCreateModal: isGameReady,
       })
     }
@@ -1339,7 +1580,7 @@ export function LandingPage({
     setCameraGateMessage(
       !cameraReady
         ? '카메라와 오디오를 먼저 연결해 주세요.'
-        : calibration.status !== 'passed'
+        : visibleCalibration.status !== 'passed'
           ? 'GAME READY CHECK를 먼저 완료해주세요.'
           : '오디오를 먼저 연결해 주세요.',
     )
@@ -1362,7 +1603,7 @@ export function LandingPage({
       return '게임방에 참여하려면 카메라를 연결해 주세요.'
     }
 
-    if (calibration.status !== 'passed') {
+    if (visibleCalibration.status !== 'passed') {
       return '게임방에 참여하려면 GAME READY CHECK를 완료해 주세요.'
     }
 
@@ -1378,7 +1619,7 @@ export function LandingPage({
       return '카메라 연결이 필요합니다.'
     }
 
-    if (calibration.status !== 'passed') {
+    if (visibleCalibration.status !== 'passed') {
       return 'GAME READY CHECK를 먼저 완료해주세요.'
     }
 
@@ -1406,7 +1647,7 @@ export function LandingPage({
           participantName: nextPreferences.displayName,
           cameraReady,
           micReady,
-          calibrationStatus: calibration.status,
+          calibrationStatus: visibleCalibration.status,
         })
       }
 
@@ -1478,7 +1719,7 @@ export function LandingPage({
                 mediaMode={mediaMode}
                 cameraReady={cameraReady}
                 micReady={micReady}
-                calibration={calibration}
+                calibration={visibleCalibration}
                 videoRef={cameraVideoRef}
                 onShowIntro={() => setMediaMode('intro')}
                 onShowCamera={() => setMediaMode('camera')}
@@ -1600,7 +1841,7 @@ export function LandingPage({
                   <div className="landing-device-readiness">
                     <span className={cameraReady ? 'is-ready' : ''}>CAMERA {cameraReady ? 'READY' : getDeviceStatusLabel(cameraStatus)}</span>
                     <span className={micReady ? 'is-ready' : ''}>MIC {micReady ? 'READY' : getDeviceStatusLabel(micStatus)}</span>
-                    <span className={calibration.status === 'passed' ? 'is-ready' : ''}>GAME READY {calibration.status === 'passed' ? '✓' : 'CHECK'}</span>
+                    <span className={visibleCalibration.status === 'passed' ? 'is-ready' : ''}>GAME READY {visibleCalibration.status === 'passed' ? '✓' : 'CHECK'}</span>
                   </div>
                 </div>
                 <div className="landing-modal-footer">
@@ -1654,7 +1895,7 @@ export function LandingPage({
                 <div className="landing-device-readiness">
                   <span className={cameraReady ? 'is-ready' : ''}>CAMERA {cameraReady ? 'READY' : getDeviceStatusLabel(cameraStatus)}</span>
                   <span className={micReady ? 'is-ready' : ''}>MIC {micReady ? 'READY' : getDeviceStatusLabel(micStatus)}</span>
-                  <span className={calibration.status === 'passed' ? 'is-ready' : ''}>GAME READY {calibration.status === 'passed' ? '✓' : 'CHECK'}</span>
+                  <span className={visibleCalibration.status === 'passed' ? 'is-ready' : ''}>GAME READY {visibleCalibration.status === 'passed' ? '✓' : 'CHECK'}</span>
                 </div>
                 {codeError && <p role="alert">{codeError}</p>}
                 {mediaError && !codeError && <p role="alert">{mediaError}</p>}

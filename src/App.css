@@ -9570,6 +9570,33 @@
   background: rgba(99, 241, 255, 0.1);
 }
 
+.meeting-page .participant-visibility-warning {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: calc(100% - 24px);
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(242, 43, 190, 0.68);
+  border-radius: 999px;
+  color: #f4f9ff;
+  background: rgba(3, 9, 24, 0.82);
+  box-shadow:
+    inset 0 0 0 1px rgba(242, 43, 190, 0.22),
+    0 0 18px rgba(242, 43, 190, 0.18);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
 .meeting-page .participant-game-card.is-attacker {
   border-color: rgba(255, 61, 198, 0.7);
   box-shadow:
@@ -9595,11 +9622,12 @@
 }
 
 .meeting-page .participant-game-card.is-fair-play-warning {
-  border-color: rgba(255, 210, 77, 0.82);
+  border-color: rgba(242, 43, 190, 0.82);
   box-shadow:
-    0 0 0 1px rgba(255, 210, 77, 0.32) inset,
-    0 0 20px rgba(255, 210, 77, 0.18),
+    0 0 0 1px rgba(242, 43, 190, 0.28) inset,
+    0 0 20px rgba(242, 43, 190, 0.2),
     0 18px 42px rgba(0, 0, 0, 0.24);
+  animation: participant-visibility-warning-pulse 1s ease-in-out infinite alternate;
 }
 
 .meeting-page .participant-life-hud {
@@ -10146,6 +10174,7 @@
 .meeting-page .game-fair-play-audio-status {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   min-height: 30px;
   padding: 0 10px;
@@ -10155,20 +10184,35 @@
 }
 
 .meeting-page .game-fair-play-warning {
-  border: 1px solid rgba(255, 210, 77, 0.7);
-  color: #ffe69c;
-  background: rgba(255, 210, 77, 0.14);
+  flex-direction: column;
+  gap: 9px;
+  min-width: min(240px, 100%);
+  min-height: 0;
+  margin-top: 6px;
+  margin-bottom: 4px;
+  padding: 12px 16px;
+  border: 1px solid rgba(242, 43, 190, 0.68);
+  color: #f4f9ff;
+  background: rgba(3, 9, 24, 0.78);
   animation: fair-play-warning-pulse 0.9s ease-in-out infinite alternate;
+  text-align: center;
+}
+
+.meeting-page .game-fair-play-warning strong {
+  max-width: 18ch;
+  line-height: 1.15;
 }
 
 .meeting-page .game-fair-play-warning span {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border-radius: 50%;
   color: #071226;
-  background: #ffe69c;
+  background: #f22bbe;
+  font-size: 22px;
+  line-height: 1;
 }
 
 .meeting-page .game-fair-play-hit {
@@ -10199,11 +10243,27 @@
 
 @keyframes fair-play-warning-pulse {
   from {
-    box-shadow: 0 0 0 rgba(255, 210, 77, 0);
+    box-shadow: 0 0 0 rgba(242, 43, 190, 0);
   }
 
   to {
-    box-shadow: 0 0 18px rgba(255, 210, 77, 0.18);
+    box-shadow: 0 0 18px rgba(242, 43, 190, 0.18);
+  }
+}
+
+@keyframes participant-visibility-warning-pulse {
+  from {
+    box-shadow:
+      0 0 0 1px rgba(242, 43, 190, 0.24) inset,
+      0 0 12px rgba(242, 43, 190, 0.12),
+      0 18px 42px rgba(0, 0, 0, 0.24);
+  }
+
+  to {
+    box-shadow:
+      0 0 0 1px rgba(242, 43, 190, 0.42) inset,
+      0 0 26px rgba(242, 43, 190, 0.28),
+      0 18px 42px rgba(0, 0, 0, 0.24);
   }
 }
 
@@ -12060,6 +12120,14 @@
     font-size: 7px;
   }
 
+  .mobile-player-rail .participant-visibility-warning {
+    bottom: 28px;
+    max-width: calc(100% - 14px);
+    min-height: 18px;
+    padding-inline: 6px;
+    font-size: 7px;
+  }
+
   .meeting-page .meeting-controls-wrap {
     bottom: max(8px, env(safe-area-inset-bottom));
   }
@@ -12466,6 +12534,14 @@
   .player-gallery .participant-ready-badge,
   .player-gallery .participant-role-badge {
     min-height: 17px;
+    padding-inline: 6px;
+    font-size: 7px;
+  }
+
+  .player-gallery .participant-visibility-warning {
+    bottom: 28px;
+    max-width: calc(100% - 14px);
+    min-height: 18px;
     padding-inline: 6px;
     font-size: 7px;
   }

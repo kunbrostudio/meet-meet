@@ -15,6 +15,7 @@ type MeetMeetRoomLayoutProps = {
   playerStates?: Record<string, GamePlayerState>
   maxLives?: number
   fairPlayWarningParticipantIdentity?: string
+  fairPlayWarningMessage?: string
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -30,6 +31,7 @@ export function MeetMeetRoomLayout({
   playerStates,
   maxLives = 3,
   fairPlayWarningParticipantIdentity,
+  fairPlayWarningMessage,
   onSelectParticipant,
   onReconnectMedia,
 }: MeetMeetRoomLayoutProps) {
@@ -51,6 +53,7 @@ export function MeetMeetRoomLayout({
         playerStates={playerStates}
         maxLives={maxLives}
         fairPlayWarningParticipantIdentity={fairPlayWarningParticipantIdentity}
+        fairPlayWarningMessage={fairPlayWarningMessage}
         onSelectParticipant={onSelectParticipant}
         onReconnectMedia={onReconnectMedia}
       />
@@ -69,6 +72,7 @@ export function MeetMeetRoomLayout({
           playerStates={playerStates}
           maxLives={maxLives}
           fairPlayWarningParticipantIdentity={fairPlayWarningParticipantIdentity}
+          fairPlayWarningMessage={fairPlayWarningMessage}
           onSelectParticipant={onSelectParticipant}
           onReconnectMedia={onReconnectMedia}
         />
@@ -84,6 +88,7 @@ export function MeetMeetRoomLayout({
         playerStates={playerStates}
         maxLives={maxLives}
         fairPlayWarningParticipantIdentity={fairPlayWarningParticipantIdentity}
+        fairPlayWarningMessage={fairPlayWarningMessage}
         onSelectParticipant={onSelectParticipant}
         onReconnectMedia={onReconnectMedia}
       />

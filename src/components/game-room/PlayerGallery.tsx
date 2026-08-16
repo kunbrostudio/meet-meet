@@ -20,6 +20,7 @@ type PlayerGalleryProps = {
   playerStates?: Record<string, GamePlayerState>
   maxLives?: number
   fairPlayWarningParticipantIdentity?: string
+  fairPlayWarningMessage?: string
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
   onReturnToGame?: () => void
@@ -104,6 +105,7 @@ export function PlayerGallery({
   playerStates,
   maxLives = 3,
   fairPlayWarningParticipantIdentity,
+  fairPlayWarningMessage,
   onSelectParticipant,
   onReconnectMedia,
   onReturnToGame,
@@ -196,6 +198,11 @@ export function PlayerGallery({
               maxLives={maxLives}
               isFairPlayWarning={
                 participantIdentity === fairPlayWarningParticipantIdentity
+              }
+              fairPlayWarningMessage={
+                participantIdentity === fairPlayWarningParticipantIdentity
+                  ? fairPlayWarningMessage
+                  : undefined
               }
               onSelect={
                 onSelectParticipant

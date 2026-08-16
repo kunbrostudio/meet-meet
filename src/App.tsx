@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { ENABLE_MOCK_DATA } from './constants/mockData'
 import { LandingPage } from './pages/LandingPage'
 import { MeetingRoomPage } from './pages/MeetingRoomPage'
 import type {
   LocalMediaState,
+  GameReadySnapshot,
   MediaDeviceSelection,
   MeetingPreferences,
   Room,
@@ -118,6 +119,10 @@ function App() {
     cameraEnabled: true,
     microphoneEnabled: true,
   })
+  const localMediaRef = useRef(localMedia)
+  const [gameReadySnapshot, setGameReadySnapshot] =
+    useState<GameReadySnapshot | null>(null)
+  const gameReadySnapshotRef = useRef<GameReadySnapshot | null>(null)
   const [deviceSelection, setDeviceSelection] = useState<MediaDeviceSelection>({
     videoDeviceId: '',
     audioDeviceId: '',
@@ -125,10 +130,20 @@ function App() {
   })
 
   useEffect(() => {
+    localMediaRef.current = localMedia
+  }, [localMedia])
+
+  useEffect(() => {
+    gameReadySnapshotRef.current = gameReadySnapshot
+  }, [gameReadySnapshot])
+
+  useEffect(() => {
     const handlePopState = () => {
       const nextPage = getPageFromPath()
       if (import.meta.env.DEV && nextPage !== 'meeting' && localMedia.stream) {
-        console.info('[camera-session] route-change preserved')
+        console.info('[app-camera] route-change preserved', {
+          trackId: localMedia.stream.getVideoTracks()[0]?.id,
+        })
       }
       setPage(nextPage)
     }
@@ -138,12 +153,57 @@ function App() {
 
   const navigate = (nextPage: Page) => {
     if (import.meta.env.DEV && nextPage !== 'meeting' && localMedia.stream) {
-      console.info('[camera-session] route-change preserved')
+      console.info('[app-camera] route-change preserved', {
+        trackId: localMedia.stream.getVideoTracks()[0]?.id,
+      })
     }
     window.history.pushState({}, '', pagePaths[nextPage])
     setPage(nextPage)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
+
+  useEffect(() => {
+    const videoTrack = localMedia.stream?.getVideoTracks()[0]
+
+    if (!videoTrack) {
+      return
+    }
+
+    const handleEnded = () => {
+      window.setTimeout(() => {
+        const latestMedia = localMediaRef.current
+        const latestVideoTrack = latestMedia.stream?.getVideoTracks()[0]
+
+        if (latestVideoTrack !== videoTrack || !latestMedia.cameraEnabled) {
+          return
+        }
+
+        if (import.meta.env.DEV) {
+          console.info('[app-camera] track ended unexpectedly', {
+            trackId: videoTrack.id,
+          })
+        }
+
+        const audioTracks = latestMedia.stream?.getAudioTracks() ?? []
+        const nextMedia = {
+          stream: audioTracks.length > 0 ? new MediaStream(audioTracks) : null,
+          cameraEnabled: false,
+          microphoneEnabled: latestMedia.microphoneEnabled,
+        }
+
+        localMediaRef.current = nextMedia
+        gameReadySnapshotRef.current = null
+        setGameReadySnapshot(null)
+        setLocalMedia(nextMedia)
+      }, 0)
+    }
+
+    videoTrack.addEventListener('ended', handleEnded)
+
+    return () => {
+      videoTrack.removeEventListener('ended', handleEnded)
+    }
+  }, [localMedia.stream])
 
   const enterMeetingRoom = (room: Room, nextPreferences: MeetingPreferences) => {
     const now = new Date().toISOString()
@@ -237,10 +297,41 @@ function App() {
         const nextTracks = new Set(nextMedia.stream?.getTracks() ?? [])
         current.stream.getTracks().forEach((track) => {
           if (!nextTracks.has(track)) {
+            if (import.meta.env.DEV) {
+              console.info('[app-camera] explicitly stopped by app media update', {
+                kind: track.kind,
+                trackId: track.id,
+              })
+            }
+            if (
+              track.kind === 'video'
+              && gameReadySnapshotRef.current?.verifiedTrackId === track.id
+            ) {
+              if (import.meta.env.DEV) {
+                console.info('[game-ready] snapshot invalidated', {
+                  reason: 'video-track-replaced',
+                  verifiedTrackId: track.id,
+                })
+              }
+              gameReadySnapshotRef.current = null
+              setGameReadySnapshot(null)
+            }
             track.stop()
           }
         })
       }
+
+      if (
+        import.meta.env.DEV
+        && nextMedia.stream
+        && current.stream === nextMedia.stream
+      ) {
+        console.info('[app-camera] session reused', {
+          trackId: nextMedia.stream.getVideoTracks()[0]?.id,
+        })
+      }
+
+      localMediaRef.current = nextMedia
       return nextMedia
     })
   }
@@ -284,6 +375,8 @@ function App() {
             deviceSelection={deviceSelection}
             initialPreferences={preferences}
             onLocalMediaChange={updateLocalMedia}
+            gameReadySnapshot={gameReadySnapshot}
+            onGameReadySnapshotChange={setGameReadySnapshot}
             onDeviceSelectionChange={setDeviceSelection}
             onCreateRoom={createRoomFromLanding}
             onJoinRoom={joinWithCode}

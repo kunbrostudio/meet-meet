@@ -21,17 +21,30 @@ const WASM_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
 
 const DETECTION_INTERVAL_MS = 90
-const FACE_MISSING_GRACE_MS = 500
-const MOUTH_OCCLUSION_GRACE_MS = 500
-const VISIBILITY_COUNTDOWN_MS = 4000
+const FACE_UNSTABLE_ENTER_MS = 400
+const FACE_LOST_ENTER_MS = 800
+const FACE_RECOVERY_CONFIRM_MS = 800
+const FACE_RECOVERY_LOCK_MS = 1000
+const MOUTH_UNCLEAR_WARNING_MS = 800
 const LAUGH_TRIGGER_SCORE = 0.52
 const LAUGH_REARM_SCORE = 0.32
 const LAUGH_MIN_DURATION_MS = 260
 const LAUGH_LOCK_MS = 1400
-const OCCLUSION_LOCK_MS = 800
 const FAIR_PLAY_CALIBRATION_STORAGE_KEY = 'meet-meet:fair-play-calibration'
 
 type LaughState = 'neutral' | 'candidate' | 'triggered' | 'locked'
+export type FairPlayVisibilityStatus =
+  | 'UNKNOWN'
+  | 'VISIBLE'
+  | 'FACE_UNSTABLE'
+  | 'FACE_LOST'
+  | 'MOUTH_UNCLEAR'
+  | 'CAMERA_OFF'
+type FairPlayWarningReason =
+  | 'face-unstable'
+  | 'face-lost'
+  | 'mouth-unclear'
+  | 'camera-off'
 type FaceCheckStep =
   | 'look-forward'
   | 'mouth-open'
@@ -42,7 +55,8 @@ type FaceCheckMode = 'full' | 'quick'
 
 export type FairPlayWarningState = {
   active: boolean
-  reason?: 'mouth-occluded' | 'face-not-visible'
+  status?: Exclude<FairPlayVisibilityStatus, 'UNKNOWN' | 'VISIBLE'>
+  reason?: FairPlayWarningReason
   message?: string
   remainingMs?: number
 }
@@ -57,6 +71,8 @@ export type FairPlayDebugState = {
   faceVisible: boolean
   mouthOccluded: boolean
   warningRemainingMs: number
+  visibilityStatus: FairPlayVisibilityStatus
+  visibilityElapsedMs: number
 }
 
 export type FairPlayCheckUiState = {
@@ -167,10 +183,12 @@ export class FairPlayDetector {
   private laughCandidateStartedAt = 0
   private laughSustainedFrames = 0
   private laughLockedUntil = 0
-  private visibilityReason: 'mouth-occluded' | 'face-not-visible' | null = null
+  private visibilityReason: 'face-lost' | 'mouth-unclear' | null = null
   private visibilityStartedAt = 0
-  private visibilityPenaltyLockedUntil = 0
-  private occlusionSequence = 0
+  private visibilityStableSince = 0
+  private visibilityRecoveryStartedAt = 0
+  private visibilityRecoveryLockedUntil = 0
+  private visibilityStatus: FairPlayVisibilityStatus = 'UNKNOWN'
   private frameDiagnosticLogged = false
   private lastLoggedFaceCheckStep: FaceCheckStep | 'camera' | null = null
 
@@ -330,7 +348,9 @@ export class FairPlayDetector {
       laughState: this.laughState,
       faceVisible,
       mouthOccluded,
-      warningRemainingMs: this.getVisibilityRemainingMs(now),
+      warningRemainingMs: 0,
+      visibilityStatus: this.visibilityStatus,
+      visibilityElapsedMs: this.getVisibilityElapsedMs(now),
     })
 
     if (this.mode === 'face-check') {
@@ -581,64 +601,178 @@ export class FairPlayDetector {
     faceVisible: boolean
     mouthOccluded: boolean
   }): void {
-    const nextReason =
+    const nextReason: 'face-lost' | 'mouth-unclear' | null =
       !input.faceVisible
-        ? 'face-not-visible'
+        ? 'face-lost'
         : input.mouthOccluded
-          ? 'mouth-occluded'
+          ? 'mouth-unclear'
           : null
 
     if (!nextReason) {
       this.visibilityReason = null
       this.visibilityStartedAt = 0
-      this.callbacks.onWarning?.({ active: false })
+
+      if (
+        this.visibilityStatus !== 'FACE_LOST'
+        && this.visibilityStatus !== 'MOUTH_UNCLEAR'
+        && this.visibilityStatus !== 'FACE_UNSTABLE'
+      ) {
+        const wasVisible = this.visibilityStatus === 'VISIBLE'
+
+        this.visibilityRecoveryStartedAt = 0
+        this.visibilityStableSince = 0
+        this.setVisibilityStatus('VISIBLE', input, 0)
+        if (!wasVisible) {
+          this.callbacks.onWarning?.({ active: false })
+        }
+        return
+      }
+
+      if (!this.visibilityRecoveryStartedAt) {
+        this.visibilityRecoveryStartedAt = input.now
+        this.logVisibilityRecovery('candidate started', input, 0)
+      }
+
+      if (!this.visibilityStableSince) {
+        this.visibilityStableSince = input.now
+        return
+      }
+
+      if (
+        input.now - this.visibilityRecoveryStartedAt
+          >= FACE_RECOVERY_CONFIRM_MS
+      ) {
+        this.setVisibilityStatus('VISIBLE', input, input.now - this.visibilityStableSince)
+        this.callbacks.onWarning?.({ active: false })
+        this.visibilityRecoveryStartedAt = 0
+        this.visibilityStableSince = 0
+        this.visibilityRecoveryLockedUntil = input.now + FACE_RECOVERY_LOCK_MS
+        this.logVisibilityRecovery('lock started', input, FACE_RECOVERY_LOCK_MS)
+      }
       return
     }
 
-    const graceMs =
-      nextReason === 'face-not-visible'
-        ? FACE_MISSING_GRACE_MS
-        : MOUTH_OCCLUSION_GRACE_MS
+    this.visibilityStableSince = 0
+    this.visibilityRecoveryStartedAt = 0
+
+    if (
+      nextReason === 'face-lost'
+      && input.now < this.visibilityRecoveryLockedUntil
+    ) {
+      return
+    }
 
     if (this.visibilityReason !== nextReason || !this.visibilityStartedAt) {
       this.visibilityReason = nextReason
       this.visibilityStartedAt = input.now
+      if (import.meta.env.DEV) {
+        console.info('[visibility-raw] candidate started', {
+          reason: nextReason,
+          facePresent: input.faceVisible,
+          mouthReliable: !input.mouthOccluded,
+        })
+      }
       return
     }
 
-    const warningStartedAt = this.visibilityStartedAt + graceMs
-    const remainingMs =
-      Math.max(0, VISIBILITY_COUNTDOWN_MS - (input.now - warningStartedAt))
+    const elapsedMs = input.now - this.visibilityStartedAt
+    const nextStatus = this.getSmoothedVisibilityStatus(nextReason, elapsedMs)
 
-    if (input.now >= warningStartedAt) {
-      this.callbacks.onWarning?.({
-        active: true,
-        reason: nextReason,
-        message:
-          nextReason === 'face-not-visible'
-            ? '얼굴을 보여주세요!'
-            : '입을 보여주세요!',
-        remainingMs,
-      })
+    if (!nextStatus) {
+      return
     }
 
-    if (
-      remainingMs === 0
-      && input.now >= this.visibilityPenaltyLockedUntil
-    ) {
-      this.visibilityPenaltyLockedUntil = input.now + OCCLUSION_LOCK_MS
-      this.occlusionSequence += 1
-      this.callbacks.onFairPlayEvent?.({
-        eventId: `${nextReason}:${this.occlusionSequence}:${crypto.randomUUID()}`,
-        reason:
-          nextReason === 'face-not-visible'
-            ? 'face-not-visible-timeout'
-            : 'mouth-occlusion-timeout',
-        detectorVersion: FAIR_PLAY_DETECTOR_VERSION,
-        detectedAt: new Date().toISOString(),
-      })
-      this.visibilityStartedAt = input.now
+    const previousStatus = this.visibilityStatus
+    this.setVisibilityStatus(nextStatus, input, elapsedMs)
+    if (nextStatus === 'FACE_UNSTABLE') {
+      return
     }
+
+    if (previousStatus === nextStatus) {
+      return
+    }
+
+    this.callbacks.onWarning?.({
+      active: true,
+      status: nextStatus,
+      reason: nextStatus === 'MOUTH_UNCLEAR'
+        ? 'mouth-unclear'
+        : 'face-lost',
+      message: this.getVisibilityMessage(nextStatus),
+    })
+  }
+
+  private getSmoothedVisibilityStatus(
+    reason: 'face-lost' | 'mouth-unclear',
+    elapsedMs: number,
+  ): Exclude<FairPlayVisibilityStatus, 'UNKNOWN' | 'VISIBLE'> | null {
+    if (reason === 'face-lost') {
+      if (elapsedMs >= FACE_LOST_ENTER_MS) {
+        return 'FACE_LOST'
+      }
+
+      return elapsedMs >= FACE_UNSTABLE_ENTER_MS ? 'FACE_UNSTABLE' : null
+    }
+
+    if (elapsedMs >= MOUTH_UNCLEAR_WARNING_MS) {
+      return 'MOUTH_UNCLEAR'
+    }
+
+    return elapsedMs >= FACE_UNSTABLE_ENTER_MS ? 'FACE_UNSTABLE' : null
+  }
+
+  private getVisibilityMessage(
+    status: Exclude<FairPlayVisibilityStatus, 'UNKNOWN' | 'VISIBLE'>,
+  ): string {
+    if (status === 'CAMERA_OFF') {
+      return 'TURN CAMERA ON'
+    }
+
+    if (status === 'MOUTH_UNCLEAR') {
+      return 'KEEP YOUR MOUTH VISIBLE'
+    }
+
+    return 'KEEP YOUR FACE VISIBLE'
+  }
+
+  private setVisibilityStatus(
+    nextStatus: FairPlayVisibilityStatus,
+    input: { now: number; faceVisible: boolean; mouthOccluded: boolean },
+    elapsedMs: number,
+  ): void {
+    if (this.visibilityStatus === nextStatus) {
+      return
+    }
+
+    const previousStatus = this.visibilityStatus
+    this.visibilityStatus = nextStatus
+
+    if (import.meta.env.DEV) {
+      console.info('[visibility-state]', {
+        from: previousStatus,
+        to: nextStatus,
+        facePresent: input.faceVisible,
+        mouthReliable: !input.mouthOccluded,
+        elapsedMs: Math.round(elapsedMs),
+      })
+    }
+  }
+
+  private logVisibilityRecovery(
+    message: string,
+    input: { faceVisible: boolean; mouthOccluded: boolean },
+    elapsedMs: number,
+  ): void {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    console.info('[visibility-recovery]', {
+      message,
+      facePresent: input.faceVisible,
+      mouthReliable: !input.mouthOccluded,
+      elapsedMs: Math.round(elapsedMs),
+    })
   }
 
   private getBlendScores(result: FaceLandmarkerResult): {
@@ -760,12 +894,12 @@ export class FairPlayDetector {
     ))
   }
 
-  private getVisibilityRemainingMs(now: number): number {
-    if (!this.visibilityReason || !this.visibilityStartedAt) {
+  private getVisibilityElapsedMs(now: number): number {
+    if (!this.visibilityStartedAt) {
       return 0
     }
 
-    return Math.max(0, VISIBILITY_COUNTDOWN_MS - (now - this.visibilityStartedAt))
+    return Math.max(0, now - this.visibilityStartedAt)
   }
 
   private resetEpisodeState(): void {
@@ -775,6 +909,9 @@ export class FairPlayDetector {
     this.laughLockedUntil = 0
     this.visibilityReason = null
     this.visibilityStartedAt = 0
-    this.visibilityPenaltyLockedUntil = 0
+    this.visibilityStableSince = 0
+    this.visibilityRecoveryStartedAt = 0
+    this.visibilityRecoveryLockedUntil = 0
+    this.visibilityStatus = 'UNKNOWN'
   }
 }

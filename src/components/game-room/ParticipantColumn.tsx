@@ -14,6 +14,7 @@ type ParticipantColumnProps = {
   playerStates?: Record<string, GamePlayerState>
   maxLives?: number
   fairPlayWarningParticipantIdentity?: string
+  fairPlayWarningMessage?: string
   onSelectParticipant?: (participantId: number) => void
   onReconnectMedia?: () => void
 }
@@ -29,6 +30,7 @@ export function ParticipantColumn({
   playerStates,
   maxLives = 3,
   fairPlayWarningParticipantIdentity,
+  fairPlayWarningMessage,
   onSelectParticipant,
   onReconnectMedia,
 }: ParticipantColumnProps) {
@@ -72,6 +74,11 @@ export function ParticipantColumn({
               maxLives={maxLives}
               isFairPlayWarning={
                 participantIdentity === fairPlayWarningParticipantIdentity
+              }
+              fairPlayWarningMessage={
+                participantIdentity === fairPlayWarningParticipantIdentity
+                  ? fairPlayWarningMessage
+                  : undefined
               }
               onSelect={
                 onSelectParticipant

@@ -81,6 +81,22 @@ type AttackImageState =
   | { status: 'ready'; url: string; message?: undefined }
   | { status: 'error'; url?: undefined; message: string }
 
+function getFairPlayHitLabel(event: GameFairPlayEventRecord | undefined) {
+  if (!event) {
+    return ''
+  }
+
+  if (
+    event.reason === 'visibility-face-lost'
+    || event.reason === 'visibility-camera-off'
+    || event.reason === 'face-not-visible-timeout'
+  ) {
+    return 'VISIBILITY HIT · LIFE -1'
+  }
+
+  return '웃음 감지! LIFE -1'
+}
+
 export function GameBoard({
   phase = 'waiting',
   statusText,
@@ -603,7 +619,10 @@ export function GameBoard({
             {fairPlayWarning?.active && (
               <div className="game-fair-play-warning" role="status">
                 <strong>{fairPlayWarning.message}</strong>
-                <span>{Math.ceil((fairPlayWarning.remainingMs ?? 0) / 1000)}</span>
+                {typeof fairPlayWarning.remainingMs === 'number'
+                  && fairPlayWarning.remainingMs > 0 && (
+                    <span>{Math.ceil(fairPlayWarning.remainingMs / 1000)}</span>
+                  )}
               </div>
             )}
             {fairPlayDamageLocked ? (
@@ -612,7 +631,7 @@ export function GameBoard({
               </div>
             ) : fairPlayLastEvent ? (
               <div className="game-fair-play-hit" role="status">
-                웃음 감지! LIFE -1
+                {getFairPlayHitLabel(fairPlayLastEvent)}
               </div>
             ) : null}
             {fairPlayDebug && (
@@ -621,9 +640,10 @@ export function GameBoard({
                   smile: fairPlayDebug.smileScore.toFixed(2),
                   cheek: fairPlayDebug.cheekScore.toFixed(2),
                   state: fairPlayDebug.laughState,
+                  visibility: fairPlayDebug.visibilityStatus,
                   face: fairPlayDebug.faceVisible,
-                  mouthOccluded: fairPlayDebug.mouthOccluded,
-                  warningMs: Math.round(fairPlayDebug.warningRemainingMs),
+                  mouthUnclear: fairPlayDebug.mouthOccluded,
+                  visibilityMs: Math.round(fairPlayDebug.visibilityElapsedMs),
                 }, null, 2)}
               </pre>
             )}

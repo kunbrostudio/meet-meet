@@ -81,6 +81,9 @@ export function LiveKitTestRoom({
   const onRemovedFromMeetingRef = useLatestRef(onRemovedFromMeeting)
   const onHideRef = useLatestRef(onHide)
   const onDisconnectRef = useLatestRef(onDisconnect)
+  const roomOptions = useMemo(() => ({
+    stopLocalTrackOnUnpublish: false,
+  }), [])
 
   const handleConnected = useCallback(() => {
     onConnectedChangeRef.current(true)
@@ -174,6 +177,7 @@ export function LiveKitTestRoom({
             connect
             audio={false}
             video={false}
+            options={roomOptions}
             onConnected={handleConnected}
             onDisconnected={handleDisconnected}
             onError={handleError}
@@ -413,7 +417,7 @@ function LiveKitMediaControllerBridge({
         await room.localParticipant.setScreenShareEnabled(enabled)
       },
       disconnect: () => {
-        room.disconnect()
+        void room.disconnect(false)
       },
     }
 
@@ -579,6 +583,11 @@ function LiveKitLocalMediaPublisher({
                 }
               : {}),
           })
+          if (import.meta.env.DEV && source === Track.Source.Camera) {
+            console.info('[app-camera] reused for room', {
+              trackId: track.id,
+            })
+          }
           publishState.publishedTrackIds.add(trackKey)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
